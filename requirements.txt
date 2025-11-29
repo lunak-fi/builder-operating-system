@@ -6,3 +6,10 @@ psycopg2-binary==2.9.9
 pydantic==2.5.3
 pydantic-settings==2.1.0
 python-dotenv==1.0.0
+
+# Additional MVP dependencies
+anthropic==0.18.1
+pdfplumber==0.11.0
+python-multipart==0.0.9
+weasyprint==60.2
+openpyxl==3.1.2
