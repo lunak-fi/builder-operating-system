@@ -1,17 +1,65 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 import os
 import shutil
 from pathlib import Path
+import logging
 
 from app.db.session import get_db
 from app.db.database import settings
 from app.models import DealDocument
 from app.schemas import DealDocumentResponse
+from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+
+def process_pdf_extraction(document_id: UUID, file_path: str, db_session_maker):
+    """
+    Background task to extract text from uploaded PDF.
+    Updates the document record with extracted text and parsing status.
+    """
+    # Create a new database session for background task
+    db = db_session_maker()
+    try:
+        logger.info(f"Starting PDF extraction for document {document_id}")
+
+        # Extract text from PDF
+        extracted_text = extract_text_from_pdf(file_path)
+
+        # Update document record
+        document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+        if document:
+            document.parsed_text = extracted_text
+            document.parsing_status = "completed"
+            document.parsing_error = None
+            db.commit()
+            logger.info(f"Successfully extracted {len(extracted_text)} characters from document {document_id}")
+        else:
+            logger.error(f"Document {document_id} not found in database")
+
+    except PDFExtractionError as e:
+        logger.error(f"PDF extraction failed for document {document_id}: {str(e)}")
+        # Update document with error status
+        document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+        if document:
+            document.parsing_status = "failed"
+            document.parsing_error = str(e)
+            db.commit()
+    except Exception as e:
+        logger.error(f"Unexpected error during PDF extraction for document {document_id}: {str(e)}")
+        # Update document with error status
+        document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+        if document:
+            document.parsing_status = "failed"
+            document.parsing_error = f"Unexpected error: {str(e)}"
+            db.commit()
+    finally:
+        db.close()
 
 
 @router.post("/deals/{deal_id}/upload", response_model=DealDocumentResponse, status_code=201)
@@ -19,9 +67,10 @@ async def upload_deal_document(
     deal_id: UUID,
     file: UploadFile = File(...),
     document_type: str = "pitch_deck",
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
-    """Upload a PDF document for a deal"""
+    """Upload a PDF document for a deal and trigger background text extraction"""
 
     # Validate file type
     if not file.filename.endswith('.pdf'):
@@ -32,7 +81,6 @@ async def upload_deal_document(
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate unique filename
-    file_id = str(UUID(int=0).int)  # Temporary, will be replaced with actual UUID
     filename = f"{deal_id}_{file.filename}"
     file_path = upload_dir / filename
 
@@ -49,12 +97,23 @@ async def upload_deal_document(
         document_type=document_type,
         file_name=file.filename,
         file_url=str(file_path),
-        parsing_status="pending"
+        parsing_status="processing"  # Changed from "pending" to "processing"
     )
 
     db.add(db_document)
     db.commit()
     db.refresh(db_document)
+
+    # Trigger background PDF extraction
+    from app.db.database import SessionLocal
+    background_tasks.add_task(
+        process_pdf_extraction,
+        db_document.id,
+        str(file_path),
+        SessionLocal
+    )
+
+    logger.info(f"Scheduled PDF extraction for document {db_document.id}")
 
     return db_document
 
