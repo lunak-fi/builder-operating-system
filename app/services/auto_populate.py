@@ -46,32 +46,38 @@ def populate_database_from_extraction(
             "underwriting_id": None
         }
 
-        # 1. Create or update operator
+        # 1. Create or update operator (if available)
+        operator_id = None
         operator_data = extracted_data.get("operator", {})
         if operator_data and operator_data.get("name"):
             operator = _create_or_update_operator(operator_data, db)
-            result["operator_id"] = operator.id
+            operator_id = operator.id
+            result["operator_id"] = operator_id
             logger.info(f"Operator processed: {operator.name} ({operator.id})")
+        else:
+            logger.warning("No operator name found in extraction - skipping operator creation")
 
-            # 2. Update deal with extracted data and link to operator
-            deal_data = extracted_data.get("deal", {})
-            if deal_data:
-                deal = _update_deal(deal_id, deal_data, operator.id, db)
-                logger.info(f"Deal updated: {deal.deal_name} ({deal.id})")
+        # 2. Update deal with extracted data (link to operator if available)
+        deal_data = extracted_data.get("deal", {})
+        if deal_data:
+            deal = _update_deal(deal_id, deal_data, operator_id, db)
+            logger.info(f"Deal updated: {deal.deal_name} ({deal.id})")
 
-            # 3. Create principals linked to operator
-            principals_data = extracted_data.get("principals", [])
-            if principals_data:
-                principals = _create_principals(principals_data, operator.id, db)
-                result["principal_ids"] = [p.id for p in principals]
-                logger.info(f"Created {len(principals)} principal(s)")
+        # 3. Create principals (only if we have an operator to link them to)
+        principals_data = extracted_data.get("principals", [])
+        if principals_data and operator_id:
+            principals = _create_principals(principals_data, operator_id, db)
+            result["principal_ids"] = [p.id for p in principals]
+            logger.info(f"Created {len(principals)} principal(s)")
+        elif principals_data and not operator_id:
+            logger.warning(f"Found {len(principals_data)} principals but no operator - skipping principal creation")
 
-            # 4. Create or update underwriting
-            underwriting_data = extracted_data.get("underwriting", {})
-            if underwriting_data:
-                underwriting = _create_or_update_underwriting(underwriting_data, deal_id, db)
-                result["underwriting_id"] = underwriting.id
-                logger.info(f"Underwriting created/updated for deal {deal_id}")
+        # 4. Create or update underwriting (always save if available)
+        underwriting_data = extracted_data.get("underwriting", {})
+        if underwriting_data:
+            underwriting = _create_or_update_underwriting(underwriting_data, deal_id, db)
+            result["underwriting_id"] = underwriting.id
+            logger.info(f"Underwriting created/updated for deal {deal_id}")
 
         db.commit()
         logger.info("Database population completed successfully")
@@ -114,8 +120,9 @@ def _update_deal(deal_id: UUID, deal_data: Dict[str, Any], operator_id: UUID, db
     if not deal:
         raise AutoPopulationError(f"Deal {deal_id} not found")
 
-    # Update operator_id
-    deal.operator_id = operator_id
+    # Update operator_id (only if provided, since it's a required field)
+    if operator_id is not None:
+        deal.operator_id = operator_id
 
     # Update other fields from extracted data
     field_mapping = {
