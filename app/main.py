@@ -4,7 +4,7 @@ from app.db.database import engine
 from app.db.base import Base
 
 # Import routers
-from app.api import operators, deals, principals, documents
+from app.api import operators, deals, principals, documents, underwriting
 
 app = FastAPI(
     title="Builder Operating System",
@@ -43,6 +43,7 @@ app.include_router(operators.router, prefix="/api")
 app.include_router(deals.router, prefix="/api")
 app.include_router(principals.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
+app.include_router(underwriting.router, prefix="/api")
 
 
 @app.get("/")
