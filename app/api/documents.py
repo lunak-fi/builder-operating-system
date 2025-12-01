@@ -12,6 +12,8 @@ from app.db.database import settings
 from app.models import DealDocument
 from app.schemas import DealDocumentResponse
 from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
+from app.services.llm_extractor import extract_deal_data_from_text, LLMExtractionError
+from app.services.auto_populate import populate_database_from_extraction, AutoPopulationError
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +149,69 @@ def get_document_status(document_id: UUID, db: Session = Depends(get_db)):
         "parsing_error": document.parsing_error,
         "has_parsed_text": document.parsed_text is not None
     }
+
+
+@router.post("/{document_id}/extract")
+def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
+    """
+    Extract structured data from document using LLM and populate database.
+
+    This endpoint:
+    1. Retrieves the parsed text from the document
+    2. Sends it to Claude AI for structured extraction
+    3. Auto-populates the database with extracted data (operator, deal, principals, underwriting)
+
+    Returns the extracted data and IDs of created/updated records.
+    """
+    # Get document
+    document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Check if text extraction is complete
+    if document.parsing_status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Document text extraction not completed. Status: {document.parsing_status}"
+        )
+
+    if not document.parsed_text:
+        raise HTTPException(status_code=400, detail="No parsed text available")
+
+    try:
+        logger.info(f"Starting LLM extraction for document {document_id}")
+
+        # Extract structured data using LLM
+        extracted_data = extract_deal_data_from_text(document.parsed_text)
+
+        logger.info(f"LLM extraction completed for document {document_id}")
+
+        # Populate database with extracted data
+        result = populate_database_from_extraction(
+            extracted_data=extracted_data,
+            document_id=document_id,
+            deal_id=document.deal_id,
+            db=db
+        )
+
+        logger.info(f"Database population completed for document {document_id}")
+
+        return {
+            "success": True,
+            "document_id": document_id,
+            "extracted_data": extracted_data,
+            "populated_records": result
+        }
+
+    except LLMExtractionError as e:
+        logger.error(f"LLM extraction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"LLM extraction failed: {str(e)}")
+    except AutoPopulationError as e:
+        logger.error(f"Database population failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database population failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error during extraction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 
 @router.delete("/{document_id}", status_code=204)
