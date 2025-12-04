@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Backgro
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
+import uuid
 import os
 import shutil
 from pathlib import Path
@@ -64,6 +65,93 @@ def process_pdf_extraction(document_id: UUID, file_path: str, db_session_maker):
         db.close()
 
 
+@router.post("/upload", response_model=DealDocumentResponse, status_code=201)
+async def upload_document_auto_create_deal(
+    file: UploadFile = File(...),
+    document_type: str = "pitch_deck",
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload a PDF document and automatically create a new deal for it.
+    This is the recommended workflow to avoid data overwrites.
+    """
+    from app.models import Deal, Operator
+
+    # Validate file type
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    # Get or create a default operator for new uploads
+    default_operator = db.query(Operator).filter(
+        Operator.name == "BuilderCo Test"
+    ).first()
+
+    if not default_operator:
+        # Create default operator if it doesn't exist
+        default_operator = Operator(
+            name="BuilderCo Test",
+            description="Default operator for new document uploads"
+        )
+        db.add(default_operator)
+        db.flush()
+
+    # Create a new deal with a temporary name (will be updated by extraction)
+    deal_name = f"New Deal - {file.filename[:50]}"
+    new_deal = Deal(
+        operator_id=default_operator.id,
+        deal_name=deal_name,
+        internal_code=f"AUTO-{uuid.uuid4().hex[:8].upper()}",
+        status="pending"
+    )
+    db.add(new_deal)
+    db.flush()
+
+    logger.info(f"Auto-created deal {new_deal.id} for document {file.filename}")
+
+    # Create upload directory if it doesn't exist
+    upload_dir = Path(os.getenv("UPLOAD_DIR", "/tmp/builder-os/uploads"))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate unique filename
+    filename = f"{new_deal.id}_{file.filename}"
+    file_path = upload_dir / filename
+
+    # Save file
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    # Create database record
+    db_document = DealDocument(
+        deal_id=new_deal.id,
+        document_type=document_type,
+        file_name=file.filename,
+        file_url=str(file_path),
+        parsing_status="processing"
+    )
+
+    db.add(db_document)
+    db.commit()
+    db.refresh(db_document)
+
+    # Trigger background PDF extraction
+    from app.db.database import SessionLocal
+    background_tasks.add_task(
+        process_pdf_extraction,
+        db_document.id,
+        str(file_path),
+        SessionLocal
+    )
+
+    logger.info(f"Scheduled PDF extraction for document {db_document.id}")
+
+    return db_document
+
+
 @router.post("/deals/{deal_id}/upload", response_model=DealDocumentResponse, status_code=201)
 async def upload_deal_document(
     deal_id: UUID,
@@ -72,7 +160,11 @@ async def upload_deal_document(
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
-    """Upload a PDF document for a deal and trigger background text extraction"""
+    """
+    Upload a PDF document for an existing deal.
+    WARNING: Running extraction on this will overwrite existing deal data.
+    Use POST /api/documents/upload instead to auto-create a new deal.
+    """
 
     # Validate file type
     if not file.filename.endswith('.pdf'):
