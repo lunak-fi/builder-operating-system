@@ -110,7 +110,7 @@ async def upload_document_auto_create_deal(
     logger.info(f"Auto-created deal {new_deal.id} for document {file.filename}")
 
     # Create upload directory if it doesn't exist
-    upload_dir = Path(os.getenv("UPLOAD_DIR", "/tmp/builder-os/uploads"))
+    upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate unique filename
@@ -171,7 +171,7 @@ async def upload_deal_document(
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     # Create upload directory if it doesn't exist
-    upload_dir = Path(os.getenv("UPLOAD_DIR", "/tmp/builder-os/uploads"))
+    upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate unique filename

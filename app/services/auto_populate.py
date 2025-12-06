@@ -208,12 +208,21 @@ def _create_or_update_underwriting(underwriting_data: Dict[str, Any], deal_id: U
     # Map fields from extraction JSON to model fields
     field_mapping = {
         "total_project_cost": "total_project_cost",
+        "land_cost": "land_cost",
+        "hard_cost": "hard_cost",
+        "soft_cost": "soft_cost",
         "loan_amount": "loan_amount",
         "equity_required": "equity_required",
+        "interest_rate": "interest_rate",
+        "ltv": "ltv",
+        "ltc": "ltc",
+        "dscr_at_stabilization": "dscr_at_stabilization",
         "levered_irr": "levered_irr",
         "unlevered_irr": "unlevered_irr",
         "equity_multiple": "equity_multiple",
         "average_cash_on_cash": "avg_cash_on_cash",  # Note: model uses avg_cash_on_cash
+        "exit_cap_rate": "exit_cap_rate",
+        "yield_on_cost": "yield_on_cost",
         "hold_period_months": "project_duration_years",  # Convert months to years
     }
 
@@ -230,12 +239,6 @@ def _create_or_update_underwriting(underwriting_data: Dict[str, Any], deal_id: U
 
     # Handle details_json - store additional metrics here
     details_json = underwriting_data.get("details_json", {})
-
-    # Also store purchase_price and renovation_budget in details_json since they're not in the model
-    if underwriting_data.get("purchase_price"):
-        details_json["purchase_price"] = underwriting_data["purchase_price"]
-    if underwriting_data.get("renovation_budget"):
-        details_json["renovation_budget"] = underwriting_data["renovation_budget"]
 
     if details_json:
         model_data["details_json"] = details_json

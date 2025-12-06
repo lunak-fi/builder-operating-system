@@ -140,22 +140,28 @@ Please extract the following information and return it as valid JSON:
     }}
   ],
   "underwriting": {{
-    "purchase_price": "Purchase price (numeric, optional)",
-    "renovation_budget": "Renovation/CapEx budget (numeric, optional)",
-    "total_project_cost": "Total project cost (numeric, optional)",
+    "total_project_cost": "Total project/development cost (numeric, optional)",
+    "land_cost": "Land acquisition/purchase price (numeric, optional)",
+    "hard_cost": "Hard costs/construction costs (numeric, optional)",
+    "soft_cost": "Soft costs (fees, permits, etc.) (numeric, optional)",
     "loan_amount": "Loan amount (numeric, optional)",
     "equity_required": "Equity required (numeric, optional)",
+    "interest_rate": "Loan interest rate as decimal (e.g., 0.065 for 6.5%, optional)",
+    "ltv": "Loan-to-Value ratio as decimal (e.g., 0.75 for 75%, optional)",
+    "ltc": "Loan-to-Cost ratio as decimal (optional)",
+    "dscr_at_stabilization": "Debt Service Coverage Ratio at stabilization (numeric, optional)",
     "levered_irr": "Levered IRR as decimal (e.g., 0.2511 for 25.11%, optional)",
     "unlevered_irr": "Unlevered IRR as decimal (optional)",
     "equity_multiple": "Equity multiple (e.g., 2.21, optional)",
     "average_cash_on_cash": "Average cash-on-cash return as decimal (optional)",
+    "exit_cap_rate": "Exit cap rate as decimal (e.g., 0.05 for 5%, optional)",
+    "yield_on_cost": "Yield on cost as decimal (optional)",
     "hold_period_months": "Hold period in months (integer, optional)",
     "details_json": {{
-      "exit_cap_rate": "Exit cap rate (optional)",
       "entry_cap_rate": "Entry cap rate (optional)",
       "year_1_occupancy": "Year 1 occupancy rate (optional)",
       "stabilized_occupancy": "Stabilized occupancy rate (optional)",
-      "additional_metrics": "Any other relevant financial metrics (optional)"
+      "additional_metrics": "Any other relevant financial metrics (optional, use an object for complex data)"
     }}
   }}
 }}
@@ -163,12 +169,16 @@ Please extract the following information and return it as valid JSON:
 IMPORTANT INSTRUCTIONS:
 1. Return ONLY valid JSON - no additional text, markdown formatting, or explanations
 2. For numeric values, use numbers not strings (e.g., 25.11 not "25.11%")
-3. For IRR values, convert percentages to decimals (25.11% → 0.2511)
+3. For IRR, interest_rate, cap rates, convert percentages to decimals (25.11% → 0.2511, 6.5% → 0.065)
 4. If a field is not found in the document, use null
 5. Extract ALL principals mentioned in the document (especially from contact pages)
 6. Be thorough - this is a critical data extraction task
 7. For deal_name, use the actual property/portfolio name, not generic terms
 8. For internal_code, if not explicitly stated, create one based on the deal name (e.g., "SPRINGDALE-001")
+9. Use the EXACT field names specified above - do not use synonyms or variations
+10. For land_cost, include purchase price, acquisition cost, or site cost
+11. For hard_cost, include construction costs, development costs, or building costs
+12. For soft_cost, include fees, permits, architecture, engineering costs
 
 Return only the JSON object, nothing else."""
 
@@ -201,9 +211,58 @@ def _parse_extraction_response(response_text: str) -> Dict[str, Any]:
         if "deal" not in data or "deal_name" not in data["deal"]:
             raise LLMExtractionError("Missing required field: deal.deal_name")
 
+        # Normalize underwriting fields to handle any variations
+        if "underwriting" in data:
+            data["underwriting"] = _normalize_underwriting_fields(data["underwriting"])
+
         return data
 
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON response: {str(e)}")
         logger.error(f"Response text: {response_text[:500]}")
         raise LLMExtractionError(f"Invalid JSON response from Claude: {str(e)}")
+
+
+def _normalize_underwriting_fields(raw_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize underwriting field names to handle variations and aliases.
+
+    This provides a fallback in case the LLM uses alternative field names.
+    """
+    normalized = {}
+
+    # Define field aliases (target_field: [list of possible aliases])
+    field_aliases = {
+        "land_cost": ["purchase_price", "site_cost", "acquisition_cost", "land_acquisition_cost", "land_purchase"],
+        "hard_cost": ["construction_cost", "development_cost", "building_cost", "hard_costs"],
+        "soft_cost": ["soft_costs", "fees", "permit_costs"],
+        "total_project_cost": ["total_cost", "total_development_cost", "project_cost"],
+        "loan_amount": ["debt", "loan", "debt_amount"],
+        "equity_required": ["equity", "equity_investment", "required_equity"],
+        "interest_rate": ["loan_rate", "debt_rate", "rate"],
+        "ltv": ["loan_to_value", "loan_to_value_ratio"],
+        "ltc": ["loan_to_cost", "loan_to_cost_ratio"],
+        "levered_irr": ["leveraged_irr", "irr_levered"],
+        "unlevered_irr": ["unleveraged_irr", "irr_unlevered"],
+        "equity_multiple": ["multiple", "moic", "equity_mult"],
+        "average_cash_on_cash": ["cash_on_cash", "coc", "avg_coc"],
+        "exit_cap_rate": ["exit_cap", "terminal_cap_rate", "terminal_cap"],
+        "yield_on_cost": ["yoc", "yield"],
+        "hold_period_months": ["hold_period", "investment_period_months"],
+    }
+
+    # First, copy all fields that already use standard names
+    for key, value in raw_data.items():
+        normalized[key] = value
+
+    # Then, check for aliases and map them to standard names
+    for standard_field, aliases in field_aliases.items():
+        # If standard field doesn't exist, check aliases
+        if standard_field not in normalized or normalized[standard_field] is None:
+            for alias in aliases:
+                if alias in raw_data and raw_data[alias] is not None:
+                    normalized[standard_field] = raw_data[alias]
+                    logger.info(f"Normalized field: {alias} → {standard_field}")
+                    break
+
+    return normalized
