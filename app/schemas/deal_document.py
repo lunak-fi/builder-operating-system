@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class DealDocumentBase(BaseModel):
-    deal_id: UUID
+    deal_id: UUID | None = None
     document_type: str
     file_name: str
     file_url: str

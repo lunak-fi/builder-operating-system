@@ -66,55 +66,27 @@ def process_pdf_extraction(document_id: UUID, file_path: str, db_session_maker):
 
 
 @router.post("/upload", response_model=DealDocumentResponse, status_code=201)
-async def upload_document_auto_create_deal(
+async def upload_document(
     file: UploadFile = File(...),
     document_type: str = "pitch_deck",
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
     """
-    Upload a PDF document and automatically create a new deal for it.
-    This is the recommended workflow to avoid data overwrites.
+    Upload a PDF document for processing.
+    No deal or operator is created until extraction is run.
     """
-    from app.models import Deal, Operator
-
     # Validate file type
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-
-    # Get or create a default operator for new uploads
-    default_operator = db.query(Operator).filter(
-        Operator.name == "BuilderCo Test"
-    ).first()
-
-    if not default_operator:
-        # Create default operator if it doesn't exist
-        default_operator = Operator(
-            name="BuilderCo Test",
-            description="Default operator for new document uploads"
-        )
-        db.add(default_operator)
-        db.flush()
-
-    # Create a new deal with a temporary name (will be updated by extraction)
-    deal_name = f"New Deal - {file.filename[:50]}"
-    new_deal = Deal(
-        operator_id=default_operator.id,
-        deal_name=deal_name,
-        internal_code=f"AUTO-{uuid.uuid4().hex[:8].upper()}",
-        status="pending"
-    )
-    db.add(new_deal)
-    db.flush()
-
-    logger.info(f"Auto-created deal {new_deal.id} for document {file.filename}")
 
     # Create upload directory if it doesn't exist
     upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate unique filename
-    filename = f"{new_deal.id}_{file.filename}"
+    # Generate unique filename using UUID (no deal_id yet)
+    doc_uuid = uuid.uuid4()
+    filename = f"{doc_uuid}_{file.filename}"
     file_path = upload_dir / filename
 
     # Save file
@@ -122,12 +94,12 @@ async def upload_document_auto_create_deal(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
-        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    # Create database record
+    # Create database record (no deal_id - will be linked after extraction)
     db_document = DealDocument(
-        deal_id=new_deal.id,
+        id=doc_uuid,
+        deal_id=None,
         document_type=document_type,
         file_name=file.filename,
         file_url=str(file_path),
@@ -147,7 +119,7 @@ async def upload_document_auto_create_deal(
         SessionLocal
     )
 
-    logger.info(f"Scheduled PDF extraction for document {db_document.id}")
+    logger.info(f"Uploaded document {db_document.id}, scheduled PDF extraction")
 
     return db_document
 
@@ -251,9 +223,10 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
     This endpoint:
     1. Retrieves the parsed text from the document
     2. Sends it to Claude AI for structured extraction
-    3. Auto-populates the database with extracted data (operator, deal, principals, underwriting)
+    3. Creates Operator, Deal, Principals, Underwriting records from extracted data
+    4. Links the document to the newly created deal
 
-    Returns the extracted data and IDs of created/updated records.
+    Returns the extracted data and IDs of created records.
     """
     # Get document
     document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
@@ -278,15 +251,18 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
 
         logger.info(f"LLM extraction completed for document {document_id}")
 
-        # Populate database with extracted data
+        # Populate database with extracted data (creates Operator, Deal, etc.)
         result = populate_database_from_extraction(
             extracted_data=extracted_data,
             document_id=document_id,
-            deal_id=document.deal_id,
             db=db
         )
 
-        logger.info(f"Database population completed for document {document_id}")
+        # Link document to the newly created deal
+        document.deal_id = result["deal_id"]
+        db.commit()
+
+        logger.info(f"Database population completed for document {document_id}, deal_id={result['deal_id']}")
 
         return {
             "success": True,

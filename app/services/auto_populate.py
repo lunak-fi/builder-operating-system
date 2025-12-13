@@ -17,20 +17,19 @@ class AutoPopulationError(Exception):
 def populate_database_from_extraction(
     extracted_data: Dict[str, Any],
     document_id: UUID,
-    deal_id: UUID,
     db: Session
 ) -> Dict[str, Any]:
     """
     Populate database with extracted data from LLM.
+    Creates new Operator, Deal, Principals, and Underwriting records.
 
     Args:
         extracted_data: Structured data from LLM extraction
         document_id: ID of source document
-        deal_id: ID of the deal this document belongs to
         db: Database session
 
     Returns:
-        Dictionary with IDs of created/updated records:
+        Dictionary with IDs of created records:
         {
             "operator_id": UUID,
             "deal_id": UUID,
@@ -41,12 +40,12 @@ def populate_database_from_extraction(
     try:
         result = {
             "operator_id": None,
-            "deal_id": deal_id,
+            "deal_id": None,
             "principal_ids": [],
             "underwriting_id": None
         }
 
-        # 1. Create or update operator (if available)
+        # 1. Create or update operator (required for deal creation)
         operator_id = None
         operator_data = extracted_data.get("operator", {})
         if operator_data and operator_data.get("name"):
@@ -55,13 +54,13 @@ def populate_database_from_extraction(
             result["operator_id"] = operator_id
             logger.info(f"Operator processed: {operator.name} ({operator.id})")
         else:
-            logger.warning("No operator name found in extraction - skipping operator creation")
+            raise AutoPopulationError("No operator name found in extraction - cannot create deal")
 
-        # 2. Update deal with extracted data (link to operator if available)
+        # 2. Create new deal with extracted data
         deal_data = extracted_data.get("deal", {})
-        if deal_data:
-            deal = _update_deal(deal_id, deal_data, operator_id, db)
-            logger.info(f"Deal updated: {deal.deal_name} ({deal.id})")
+        deal = _create_deal(deal_data, operator_id, db)
+        result["deal_id"] = deal.id
+        logger.info(f"Deal created: {deal.deal_name} ({deal.id})")
 
         # 3. Create principals (only if we have an operator to link them to)
         principals_data = extracted_data.get("principals", [])
@@ -69,15 +68,13 @@ def populate_database_from_extraction(
             principals = _create_principals(principals_data, operator_id, db)
             result["principal_ids"] = [p.id for p in principals]
             logger.info(f"Created {len(principals)} principal(s)")
-        elif principals_data and not operator_id:
-            logger.warning(f"Found {len(principals_data)} principals but no operator - skipping principal creation")
 
-        # 4. Create or update underwriting (always save if available)
+        # 4. Create underwriting for the new deal
         underwriting_data = extracted_data.get("underwriting", {})
         if underwriting_data:
-            underwriting = _create_or_update_underwriting(underwriting_data, deal_id, db)
+            underwriting = _create_underwriting(underwriting_data, deal.id, db)
             result["underwriting_id"] = underwriting.id
-            logger.info(f"Underwriting created/updated for deal {deal_id}")
+            logger.info(f"Underwriting created for deal {deal.id}")
 
         db.commit()
         logger.info("Database population completed successfully")
@@ -112,45 +109,40 @@ def _create_or_update_operator(operator_data: Dict[str, Any], db: Session) -> Op
         return operator
 
 
-def _update_deal(deal_id: UUID, deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> Deal:
+def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> Deal:
     """
-    Update existing deal with extracted data.
+    Create a new deal with extracted data.
     """
-    deal = db.query(Deal).filter(Deal.id == deal_id).first()
-    if not deal:
-        raise AutoPopulationError(f"Deal {deal_id} not found")
+    import uuid
 
-    # Update operator_id (only if provided, since it's a required field)
-    if operator_id is not None:
-        deal.operator_id = operator_id
-
-    # Update other fields from extracted data
-    field_mapping = {
-        "deal_name": "deal_name",
-        "internal_code": "internal_code",
-        "country": "country",
-        "state": "state",
-        "msa": "msa",
-        "submarket": "submarket",
-        "address_line1": "address_line1",
-        "postal_code": "postal_code",
-        "asset_type": "asset_type",
-        "strategy_type": "strategy_type",
-        "num_units": "num_units",
-        "building_sf": "building_sf",
-        "year_built": "year_built",
-        "business_plan_summary": "business_plan_summary",
-        "hold_period_years": "hold_period_years"
+    # Build deal fields from extracted data
+    deal_fields = {
+        "operator_id": operator_id,
+        "deal_name": deal_data.get("deal_name", "Unnamed Deal"),
+        "internal_code": deal_data.get("internal_code") or f"AUTO-{uuid.uuid4().hex[:8].upper()}",
+        "status": "received"  # New deals start in "received" status
     }
 
-    for json_field, model_field in field_mapping.items():
-        value = deal_data.get(json_field)
-        if value is not None:
-            # Convert building_sf to Decimal if needed
-            if model_field == "building_sf" and not isinstance(value, Decimal):
-                value = Decimal(str(value))
-            setattr(deal, model_field, value)
+    # Optional fields
+    optional_fields = [
+        "country", "state", "msa", "submarket", "address_line1", "postal_code",
+        "asset_type", "strategy_type", "num_units", "year_built",
+        "business_plan_summary", "hold_period_years"
+    ]
 
+    for field in optional_fields:
+        value = deal_data.get(field)
+        if value is not None:
+            deal_fields[field] = value
+
+    # Handle building_sf (needs Decimal conversion)
+    building_sf = deal_data.get("building_sf")
+    if building_sf is not None:
+        deal_fields["building_sf"] = Decimal(str(building_sf))
+
+    # Create the deal
+    deal = Deal(**deal_fields)
+    db.add(deal)
     db.flush()
     return deal
 
@@ -193,17 +185,12 @@ def _create_principals(principals_data: List[Dict[str, Any]], operator_id: UUID,
     return created_principals
 
 
-def _create_or_update_underwriting(underwriting_data: Dict[str, Any], deal_id: UUID, db: Session) -> DealUnderwriting:
+def _create_underwriting(underwriting_data: Dict[str, Any], deal_id: UUID, db: Session) -> DealUnderwriting:
     """
-    Create or update deal underwriting record.
-
-    Only one underwriting record per deal (unique constraint).
+    Create underwriting record for a new deal.
     """
-    # Check if underwriting already exists for this deal
-    existing = db.query(DealUnderwriting).filter(DealUnderwriting.deal_id == deal_id).first()
-
     # Prepare data for model
-    model_data = {}
+    model_data = {"deal_id": deal_id}
 
     # Map fields from extraction JSON to model fields
     field_mapping = {
@@ -220,10 +207,10 @@ def _create_or_update_underwriting(underwriting_data: Dict[str, Any], deal_id: U
         "levered_irr": "levered_irr",
         "unlevered_irr": "unlevered_irr",
         "equity_multiple": "equity_multiple",
-        "average_cash_on_cash": "avg_cash_on_cash",  # Note: model uses avg_cash_on_cash
+        "average_cash_on_cash": "avg_cash_on_cash",
         "exit_cap_rate": "exit_cap_rate",
         "yield_on_cost": "yield_on_cost",
-        "hold_period_months": "project_duration_years",  # Convert months to years
+        "hold_period_months": "project_duration_years",
     }
 
     for json_field, model_field in field_mapping.items():
@@ -231,29 +218,18 @@ def _create_or_update_underwriting(underwriting_data: Dict[str, Any], deal_id: U
         if value is not None:
             # Convert months to years for project_duration_years
             if json_field == "hold_period_months":
-                value = Decimal(str(value)) / 12  # Convert months to years
+                value = Decimal(str(value)) / 12
             else:
-                # Convert to Decimal for numeric fields
                 value = Decimal(str(value))
             model_data[model_field] = value
 
-    # Handle details_json - store additional metrics here
+    # Handle details_json
     details_json = underwriting_data.get("details_json", {})
-
     if details_json:
         model_data["details_json"] = details_json
 
-    if existing:
-        # Update existing
-        for field, value in model_data.items():
-            setattr(existing, field, value)
-        return existing
-    else:
-        # Create new
-        underwriting = DealUnderwriting(
-            deal_id=deal_id,
-            **model_data
-        )
-        db.add(underwriting)
-        db.flush()
-        return underwriting
+    # Create new underwriting
+    underwriting = DealUnderwriting(**model_data)
+    db.add(underwriting)
+    db.flush()
+    return underwriting
