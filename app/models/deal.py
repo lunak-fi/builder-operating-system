@@ -17,6 +17,9 @@ class Deal(Base):
     operator_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("operators.id", ondelete="CASCADE"), nullable=False
     )
+    fund_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("funds.id", ondelete="SET NULL"), nullable=True
+    )
     internal_code: Mapped[str] = mapped_column(Text, nullable=False)
     deal_name: Mapped[str] = mapped_column(Text, nullable=False)
     country: Mapped[str] = mapped_column(Text, nullable=False, default="USA")
@@ -42,6 +45,7 @@ class Deal(Base):
 
     # Relationships
     operator: Mapped["Operator"] = relationship("Operator", back_populates="deals")
+    fund: Mapped["Fund"] = relationship("Fund", back_populates="deals")
     documents: Mapped[list["DealDocument"]] = relationship(
         "DealDocument", back_populates="deal", cascade="all, delete-orphan"
     )

@@ -13,8 +13,9 @@ from app.db.database import settings
 from app.models import DealDocument
 from app.schemas import DealDocumentResponse
 from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
-from app.services.llm_extractor import extract_deal_data_from_text, LLMExtractionError
-from app.services.auto_populate import populate_database_from_extraction, AutoPopulationError
+from app.services.llm_extractor import extract_deal_data_from_text, extract_fund_data_from_text, LLMExtractionError
+from app.services.auto_populate import populate_database_from_extraction, populate_fund_from_extraction, AutoPopulationError
+from app.services.document_classifier import classify_document, ClassificationError
 
 logger = logging.getLogger(__name__)
 
@@ -222,9 +223,12 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
 
     This endpoint:
     1. Retrieves the parsed text from the document
-    2. Sends it to Claude AI for structured extraction
-    3. Creates Operator, Deal, Principals, Underwriting records from extracted data
-    4. Links the document to the newly created deal
+    2. Classifies the document as a deal deck or fund/strategy deck
+    3. Sends it to Claude AI for structured extraction (using appropriate schema)
+    4. Creates records from extracted data:
+       - Deal deck: Operator, Deal, Principals, Underwriting
+       - Fund deck: Operator, Fund, Principals
+    5. Links the document to the newly created deal or fund
 
     Returns the extracted data and IDs of created records.
     """
@@ -244,32 +248,73 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No parsed text available")
 
     try:
-        logger.info(f"Starting LLM extraction for document {document_id}")
+        # Step 1: Classify the document
+        logger.info(f"Classifying document {document_id}")
+        try:
+            doc_classification = classify_document(document.parsed_text)
+        except ClassificationError as e:
+            logger.warning(f"Classification failed, defaulting to 'deal': {str(e)}")
+            doc_classification = "deal"
 
-        # Extract structured data using LLM
-        extracted_data = extract_deal_data_from_text(document.parsed_text)
+        logger.info(f"Document {document_id} classified as: {doc_classification}")
 
-        logger.info(f"LLM extraction completed for document {document_id}")
+        # Store classification in document record
+        document.document_classification = doc_classification
 
-        # Populate database with extracted data (creates Operator, Deal, etc.)
-        result = populate_database_from_extraction(
-            extracted_data=extracted_data,
-            document_id=document_id,
-            db=db
-        )
+        # Step 2: Extract data based on classification
+        if doc_classification == "fund":
+            # Fund/Strategy deck extraction
+            logger.info(f"Starting fund LLM extraction for document {document_id}")
+            extracted_data = extract_fund_data_from_text(document.parsed_text)
+            logger.info(f"Fund LLM extraction completed for document {document_id}")
 
-        # Link document to the newly created deal
-        document.deal_id = result["deal_id"]
-        db.commit()
+            # Populate database with fund data
+            result = populate_fund_from_extraction(
+                extracted_data=extracted_data,
+                document_id=document_id,
+                db=db
+            )
 
-        logger.info(f"Database population completed for document {document_id}, deal_id={result['deal_id']}")
+            # Link document to the newly created fund
+            document.fund_id = result["fund_id"]
+            db.commit()
 
-        return {
-            "success": True,
-            "document_id": document_id,
-            "extracted_data": extracted_data,
-            "populated_records": result
-        }
+            logger.info(f"Fund database population completed for document {document_id}, fund_id={result['fund_id']}")
+
+            return {
+                "success": True,
+                "document_id": document_id,
+                "classification": "fund",
+                "extracted_data": extracted_data,
+                "populated_records": result
+            }
+
+        else:
+            # Deal deck extraction (default)
+            logger.info(f"Starting deal LLM extraction for document {document_id}")
+            extracted_data = extract_deal_data_from_text(document.parsed_text)
+            logger.info(f"Deal LLM extraction completed for document {document_id}")
+
+            # Populate database with deal data
+            result = populate_database_from_extraction(
+                extracted_data=extracted_data,
+                document_id=document_id,
+                db=db
+            )
+
+            # Link document to the newly created deal
+            document.deal_id = result["deal_id"]
+            db.commit()
+
+            logger.info(f"Deal database population completed for document {document_id}, deal_id={result['deal_id']}")
+
+            return {
+                "success": True,
+                "document_id": document_id,
+                "classification": "deal",
+                "extracted_data": extracted_data,
+                "populated_records": result
+            }
 
     except LLMExtractionError as e:
         logger.error(f"LLM extraction failed: {str(e)}")

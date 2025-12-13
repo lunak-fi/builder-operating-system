@@ -17,7 +17,11 @@ class DealDocument(Base):
     deal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=True
     )
+    fund_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("funds.id", ondelete="CASCADE"), nullable=True
+    )
     document_type: Mapped[str] = mapped_column(Text, nullable=False)
+    document_classification: Mapped[str | None] = mapped_column(Text, nullable=True)  # "deal" or "fund"
     file_name: Mapped[str] = mapped_column(Text, nullable=False)
     file_url: Mapped[str] = mapped_column(Text, nullable=False)
     source_description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -31,5 +35,6 @@ class DealDocument(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    # Relationship
+    # Relationships
     deal: Mapped["Deal"] = relationship("Deal", back_populates="documents")
+    fund: Mapped["Fund"] = relationship("Fund", back_populates="documents", foreign_keys=[fund_id])

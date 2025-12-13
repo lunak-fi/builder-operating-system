@@ -4,7 +4,7 @@ from app.db.database import engine
 from app.db.base import Base
 
 # Import routers
-from app.api import operators, deals, principals, documents, underwriting
+from app.api import operators, deals, principals, documents, underwriting, funds
 
 app = FastAPI(
     title="Builder Operating System",
@@ -31,7 +31,7 @@ def on_startup():
     Creates database tables if they don't exist.
     """
     # Import all models to ensure they're registered with Base
-    from app.models import Operator, Principal, Deal, DealDocument, DealUnderwriting, Memo
+    from app.models import Operator, Principal, Deal, DealDocument, DealUnderwriting, Memo, Fund
 
     # Note: In production, use Alembic migrations instead
     # This is kept here for development convenience
@@ -44,6 +44,7 @@ app.include_router(deals.router, prefix="/api")
 app.include_router(principals.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 app.include_router(underwriting.router, prefix="/api")
+app.include_router(funds.router, prefix="/api")
 
 
 @app.get("/")

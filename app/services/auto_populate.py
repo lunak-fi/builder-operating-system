@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 from uuid import UUID
 
-from app.models import Operator, Deal, Principal, DealUnderwriting
+from app.models import Operator, Deal, Principal, DealUnderwriting, Fund
 
 logger = logging.getLogger(__name__)
 
@@ -233,3 +233,106 @@ def _create_underwriting(underwriting_data: Dict[str, Any], deal_id: UUID, db: S
     db.add(underwriting)
     db.flush()
     return underwriting
+
+
+def populate_fund_from_extraction(
+    extracted_data: Dict[str, Any],
+    document_id: UUID,
+    db: Session
+) -> Dict[str, Any]:
+    """
+    Populate database with extracted fund/strategy data from LLM.
+    Creates new Operator, Fund, and Principals records.
+
+    Args:
+        extracted_data: Structured data from LLM fund extraction
+        document_id: ID of source document
+        db: Database session
+
+    Returns:
+        Dictionary with IDs of created records:
+        {
+            "operator_id": UUID,
+            "fund_id": UUID,
+            "principal_ids": [UUID, ...]
+        }
+    """
+    try:
+        result = {
+            "operator_id": None,
+            "fund_id": None,
+            "principal_ids": []
+        }
+
+        # 1. Create or update operator (required for fund creation)
+        operator_id = None
+        operator_data = extracted_data.get("operator", {})
+        if operator_data and operator_data.get("name"):
+            operator = _create_or_update_operator(operator_data, db)
+            operator_id = operator.id
+            result["operator_id"] = operator_id
+            logger.info(f"Operator processed: {operator.name} ({operator.id})")
+        else:
+            raise AutoPopulationError("No operator name found in extraction - cannot create fund")
+
+        # 2. Create new fund with extracted data
+        fund_data = extracted_data.get("fund", {})
+        fund = _create_fund(fund_data, operator_id, db)
+        result["fund_id"] = fund.id
+        logger.info(f"Fund created: {fund.name} ({fund.id})")
+
+        # 3. Create principals (only if we have an operator to link them to)
+        principals_data = extracted_data.get("principals", [])
+        if principals_data and operator_id:
+            principals = _create_principals(principals_data, operator_id, db)
+            result["principal_ids"] = [p.id for p in principals]
+            logger.info(f"Created {len(principals)} principal(s)")
+
+        db.commit()
+        logger.info("Fund database population completed successfully")
+        return result
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Fund auto-population failed: {str(e)}")
+        raise AutoPopulationError(f"Failed to populate fund database: {str(e)}")
+
+
+def _create_fund(fund_data: Dict[str, Any], operator_id: UUID, db: Session) -> Fund:
+    """
+    Create a new fund with extracted data.
+    """
+    # Build fund fields from extracted data
+    fund_fields = {
+        "operator_id": operator_id,
+        "name": fund_data.get("name", "Unnamed Fund"),
+        "status": "Active"
+    }
+
+    # Optional text fields
+    text_fields = ["strategy", "target_geography", "target_asset_types"]
+    for field in text_fields:
+        value = fund_data.get(field)
+        if value is not None:
+            fund_fields[field] = value
+
+    # Numeric fields (need Decimal conversion)
+    numeric_fields = [
+        "target_irr", "target_equity_multiple", "fund_size", "gp_commitment",
+        "management_fee", "carried_interest", "preferred_return"
+    ]
+    for field in numeric_fields:
+        value = fund_data.get(field)
+        if value is not None:
+            fund_fields[field] = Decimal(str(value))
+
+    # Handle details_json
+    details_json = fund_data.get("details_json", {})
+    if details_json:
+        fund_fields["details_json"] = details_json
+
+    # Create the fund
+    fund = Fund(**fund_fields)
+    db.add(fund)
+    db.flush()
+    return fund

@@ -223,6 +223,166 @@ def _parse_extraction_response(response_text: str) -> Dict[str, Any]:
         raise LLMExtractionError(f"Invalid JSON response from Claude: {str(e)}")
 
 
+def extract_fund_data_from_text(pdf_text: str) -> Dict[str, Any]:
+    """
+    Extract structured fund/strategy data from PDF text using Claude AI.
+
+    Args:
+        pdf_text: Raw text extracted from PDF
+
+    Returns:
+        Dictionary with extracted structured data:
+        {
+            "operator": {...},
+            "principals": [...],
+            "fund": {...}
+        }
+
+    Raises:
+        LLMExtractionError: If extraction fails
+    """
+    try:
+        settings = LLMSettings()
+        client = Anthropic(
+            api_key=settings.anthropic_api_key,
+            max_retries=2
+        )
+
+        extraction_prompt = _build_fund_extraction_prompt(pdf_text)
+
+        logger.info("Sending fund extraction request to Claude API")
+
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            temperature=0,
+            messages=[
+                {
+                    "role": "user",
+                    "content": extraction_prompt
+                }
+            ]
+        )
+
+        response_text = message.content[0].text
+        logger.info(f"Received fund extraction response from Claude API ({len(response_text)} chars)")
+
+        extracted_data = _parse_fund_extraction_response(response_text)
+
+        logger.info("Successfully extracted fund data from PDF text")
+        return extracted_data
+
+    except Exception as e:
+        if isinstance(e, LLMExtractionError):
+            raise
+        raise LLMExtractionError(f"Unexpected error during fund LLM extraction: {str(e)}")
+
+
+def _build_fund_extraction_prompt(pdf_text: str) -> str:
+    """
+    Build the extraction prompt for fund/strategy decks.
+    """
+    if len(pdf_text) > 50000:
+        pdf_text = pdf_text[:50000] + "\n\n[... text truncated ...]"
+
+    prompt = f"""You are analyzing a real estate investment fund or strategy deck. This document describes an investment approach/thesis, NOT a specific property deal. Extract all relevant structured data.
+
+DOCUMENT TEXT:
+{pdf_text}
+
+---
+
+Please extract the following information and return it as valid JSON:
+
+{{
+  "operator": {{
+    "name": "Company/operator name (required)",
+    "legal_name": "Legal entity name if different (optional)",
+    "website_url": "Website URL (optional)",
+    "hq_city": "Headquarters city (optional)",
+    "hq_state": "Headquarters state (optional)",
+    "hq_country": "Headquarters country (optional)",
+    "primary_geography_focus": "Primary geographic focus area (optional)",
+    "primary_asset_type_focus": "Primary asset type focus (optional)",
+    "description": "Brief description of the operator (optional)"
+  }},
+  "principals": [
+    {{
+      "full_name": "Full name (required)",
+      "headline": "Title or role (optional)",
+      "linkedin_url": "LinkedIn URL (optional)",
+      "email": "Email address (optional)",
+      "phone": "Phone number (optional)",
+      "bio": "Biography (optional)",
+      "background_summary": "Brief background summary (optional)",
+      "years_experience": "Years of experience (integer, optional)"
+    }}
+  ],
+  "fund": {{
+    "name": "Fund or strategy name (required - e.g., 'SFR Fund I', 'Build-to-Rent Strategy')",
+    "strategy": "Investment strategy type: SFR, Multifamily, BTR, Mixed, Industrial, etc. (optional)",
+    "target_irr": "Target IRR as decimal (e.g., 0.18 for 18%, optional)",
+    "target_equity_multiple": "Target equity multiple (e.g., 2.0, optional)",
+    "target_geography": "Target investment geography - comma-separated list (e.g., 'Texas, Florida, Arizona', optional)",
+    "target_asset_types": "Target asset types - comma-separated list (e.g., 'SFR, BTR', optional)",
+    "fund_size": "Target fund size in dollars (numeric, optional)",
+    "gp_commitment": "GP commitment amount in dollars (numeric, optional)",
+    "management_fee": "Annual management fee as decimal (e.g., 0.02 for 2%, optional)",
+    "carried_interest": "Carried interest/promote as decimal (e.g., 0.20 for 20%, optional)",
+    "preferred_return": "Preferred return hurdle as decimal (e.g., 0.08 for 8%, optional)",
+    "details_json": {{
+      "investment_thesis": "Brief investment thesis (optional)",
+      "target_deal_size": "Target deal size range (optional)",
+      "target_hold_period": "Target hold period (optional)",
+      "track_record": "Summary of track record (optional)",
+      "additional_info": "Any other relevant fund information (optional)"
+    }}
+  }}
+}}
+
+IMPORTANT INSTRUCTIONS:
+1. Return ONLY valid JSON - no additional text, markdown formatting, or explanations
+2. For numeric values, use numbers not strings (e.g., 0.18 not "18%")
+3. For IRR, fees, and returns, convert percentages to decimals (18% → 0.18, 2% → 0.02)
+4. If a field is not found in the document, use null
+5. Extract ALL principals/team members mentioned in the document
+6. For fund.name, use the actual fund name or create a descriptive name based on strategy
+7. This is a STRATEGY deck - focus on TARGET metrics and investment approach, not specific deal metrics
+
+Return only the JSON object, nothing else."""
+
+    return prompt
+
+
+def _parse_fund_extraction_response(response_text: str) -> Dict[str, Any]:
+    """
+    Parse the JSON response from Claude for fund extraction.
+    """
+    try:
+        text = response_text.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+
+        data = json.loads(text)
+
+        if "operator" not in data or "name" not in data["operator"]:
+            raise LLMExtractionError("Missing required field: operator.name")
+        if "fund" not in data or "name" not in data["fund"]:
+            raise LLMExtractionError("Missing required field: fund.name")
+
+        return data
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse fund JSON response: {str(e)}")
+        logger.error(f"Response text: {response_text[:500]}")
+        raise LLMExtractionError(f"Invalid JSON response from Claude: {str(e)}")
+
+
 def _normalize_underwriting_fields(raw_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize underwriting field names to handle variations and aliases.

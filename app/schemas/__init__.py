@@ -4,6 +4,7 @@ from .deal import DealCreate, DealUpdate, DealResponse
 from .deal_document import DealDocumentCreate, DealDocumentUpdate, DealDocumentResponse
 from .deal_underwriting import DealUnderwritingCreate, DealUnderwritingUpdate, DealUnderwritingResponse
 from .memo import MemoCreate, MemoUpdate, MemoResponse
+from .fund import FundCreate, FundUpdate, FundResponse
 
 __all__ = [
     "OperatorCreate",
@@ -24,4 +25,7 @@ __all__ = [
     "MemoCreate",
     "MemoUpdate",
     "MemoResponse",
+    "FundCreate",
+    "FundUpdate",
+    "FundResponse",
 ]
