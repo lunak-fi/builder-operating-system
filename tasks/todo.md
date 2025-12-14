@@ -149,4 +149,53 @@ Ascend Real Estate Fund I LLC | SFR | 24.5% IRR | 2.25x | $20M
 
 ### Next Steps
 - Upload and process Middle Door Homes document when available
-- Add frontend UI for viewing funds (new Funds page)
+- ~~Add frontend UI for viewing funds (new Funds page)~~ ✅ DONE
+
+---
+
+## Frontend Fund Integration
+
+### Implementation Complete
+
+Added frontend support for viewing funds:
+
+1. **API Layer** (`src/lib/api.ts`)
+   - Added `fundsAPI` with getAll, get, getDeals, update, delete methods
+
+2. **Types** (`src/lib/types.ts`)
+   - Added `FundWithDetails` interface
+
+3. **Navigation** (`src/components/ClientLayout.tsx`)
+   - Added "Funds" nav item between Sponsors and Portfolio
+   - Uses Landmark icon
+
+4. **Funds List Page** (`/funds`)
+   - Created `src/app/funds/page.tsx`
+   - Created `src/components/Funds.tsx`
+   - Displays: Fund Name, Sponsor, Strategy, Target IRR, Fund Size, Status
+   - Includes search and status filter
+
+5. **Fund Detail Page** (`/funds/[id]`)
+   - Created `src/app/funds/[id]/page.tsx`
+   - Created `src/components/FundDetail.tsx`
+   - Displays:
+     - Key Metrics: Target IRR, Target Multiple, Fund Size, Preferred Return
+     - Fund Structure: GP Commitment, Management Fee, Carried Interest
+     - Investment Focus: Strategy, Target Geography, Target Asset Types
+     - Deals from this fund (table)
+   - Links to sponsor detail page
+
+### Files Created
+| File | Description |
+|------|-------------|
+| `src/app/funds/page.tsx` | Funds list route |
+| `src/app/funds/[id]/page.tsx` | Fund detail route |
+| `src/components/Funds.tsx` | Funds list component |
+| `src/components/FundDetail.tsx` | Fund detail component |
+
+### Files Modified
+| File | Change |
+|------|--------|
+| `src/lib/api.ts` | Added fundsAPI |
+| `src/lib/types.ts` | Added FundWithDetails interface |
+| `src/components/ClientLayout.tsx` | Added Funds nav item |
