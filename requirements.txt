@@ -8,7 +8,7 @@ pydantic-settings==2.1.0
 python-dotenv==1.0.0
 
 # Additional MVP dependencies
-anthropic>=0.40.0
+anthropic==0.75.0
 pdfplumber==0.11.0
 python-multipart==0.0.9
 weasyprint==60.2
