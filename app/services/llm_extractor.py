@@ -176,9 +176,10 @@ IMPORTANT INSTRUCTIONS:
 7. For deal_name, use the actual property/portfolio name, not generic terms
 8. For internal_code, if not explicitly stated, create one based on the deal name (e.g., "SPRINGDALE-001")
 9. Use the EXACT field names specified above - do not use synonyms or variations
-10. For land_cost, include purchase price, acquisition cost, or site cost
-11. For hard_cost, include construction costs, development costs, or building costs
-12. For soft_cost, include fees, permits, architecture, engineering costs
+10. For land_cost, include purchase price, acquisition cost, acquisition price, or site cost
+11. For hard_cost, include construction costs, development costs, building costs, renovation costs, renovation budget, CapEx, capital improvements, or improvement costs
+12. For soft_cost, include fees, permits, architecture, engineering costs, closing costs, or transaction costs
+13. For total_project_cost, calculate the sum of land_cost + hard_cost + soft_cost if not explicitly stated
 
 Return only the JSON object, nothing else."""
 
