@@ -8,6 +8,32 @@ import uuid
 from app.db.base import Base
 
 
+# Deal status constants
+class DealStatus:
+    INBOX = "inbox"
+    PENDING = "pending"
+    SCREENING = "screening"
+    UNDER_REVIEW = "under_review"
+    DUE_DILIGENCE = "due_diligence"
+    TERM_SHEET = "term_sheet"
+    COMMITTED = "committed"
+    PASSED = "passed"
+
+
+# Forward progression chain (next stage mapping)
+DEAL_STATUS_PROGRESSION = {
+    "received": DealStatus.UNDER_REVIEW,  # New deals created by auto-populate
+    DealStatus.INBOX: DealStatus.UNDER_REVIEW,
+    DealStatus.PENDING: DealStatus.UNDER_REVIEW,
+    DealStatus.SCREENING: DealStatus.UNDER_REVIEW,
+    DealStatus.UNDER_REVIEW: DealStatus.DUE_DILIGENCE,
+    DealStatus.DUE_DILIGENCE: DealStatus.TERM_SHEET,
+    DealStatus.TERM_SHEET: DealStatus.COMMITTED,
+    DealStatus.COMMITTED: None,  # Terminal state
+    DealStatus.PASSED: None,  # Terminal state (but can be reversed)
+}
+
+
 class Deal(Base):
     __tablename__ = "deals"
 

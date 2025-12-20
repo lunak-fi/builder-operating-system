@@ -85,3 +85,42 @@ def delete_deal(deal_id: UUID, db: Session = Depends(get_db)):
     db.delete(deal)
     db.commit()
     return None
+
+
+@router.post("/{deal_id}/move-next", response_model=DealResponse)
+def move_deal_to_next_stage(deal_id: UUID, db: Session = Depends(get_db)):
+    """Move deal to the next stage in the pipeline"""
+    from app.models.deal import DEAL_STATUS_PROGRESSION, DealStatus
+
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    current_status = deal.status or DealStatus.INBOX
+    next_status = DEAL_STATUS_PROGRESSION.get(current_status)
+
+    if next_status is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot move deal forward from status: {current_status}"
+        )
+
+    deal.status = next_status
+    db.commit()
+    db.refresh(deal)
+    return deal
+
+
+@router.post("/{deal_id}/pass", response_model=DealResponse)
+def pass_deal(deal_id: UUID, db: Session = Depends(get_db)):
+    """Mark a deal as passed"""
+    from app.models.deal import DealStatus
+
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    deal.status = DealStatus.PASSED
+    db.commit()
+    db.refresh(deal)
+    return deal
