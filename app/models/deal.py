@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import String, Text, DateTime, Integer, Numeric, ForeignKey, func
+from sqlalchemy import String, Text, DateTime, Integer, Numeric, ForeignKey, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
@@ -36,6 +36,7 @@ class Deal(Base):
     business_plan_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     hold_period_years: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="inbox")
+    operator_needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

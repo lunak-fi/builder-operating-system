@@ -22,6 +22,7 @@ class DealBase(BaseModel):
     business_plan_summary: str | None = None
     hold_period_years: Decimal | None = None
     status: str = "inbox"
+    operator_needs_review: bool = False
 
 
 class DealCreate(DealBase):
@@ -46,6 +47,7 @@ class DealUpdate(BaseModel):
     business_plan_summary: str | None = None
     hold_period_years: Decimal | None = None
     status: str | None = None
+    operator_needs_review: bool | None = None
 
 
 class DealResponse(DealBase):

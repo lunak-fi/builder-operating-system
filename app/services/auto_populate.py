@@ -8,6 +8,9 @@ from app.models import Operator, Deal, Principal, DealUnderwriting, Fund
 
 logger = logging.getLogger(__name__)
 
+# Constant for placeholder operator when name is missing
+UNKNOWN_OPERATOR_NAME = "Unknown Operator"
+
 
 class AutoPopulationError(Exception):
     """Raised when auto-population fails"""
@@ -47,18 +50,26 @@ def populate_database_from_extraction(
 
         # 1. Create or update operator (required for deal creation)
         operator_id = None
+        operator_needs_review = False
         operator_data = extracted_data.get("operator", {})
+
         if operator_data and operator_data.get("name"):
+            # Normal case: operator name exists
             operator = _create_or_update_operator(operator_data, db)
             operator_id = operator.id
             result["operator_id"] = operator_id
             logger.info(f"Operator processed: {operator.name} ({operator.id})")
         else:
-            raise AutoPopulationError("No operator name found in extraction - cannot create deal")
+            # Fallback case: use "Unknown Operator" placeholder
+            operator = _create_or_update_operator({"name": UNKNOWN_OPERATOR_NAME}, db)
+            operator_id = operator.id
+            operator_needs_review = True
+            result["operator_id"] = operator_id
+            logger.warning(f"No operator name found - using placeholder. Deal will need review.")
 
         # 2. Create new deal with extracted data
         deal_data = extracted_data.get("deal", {})
-        deal = _create_deal(deal_data, operator_id, db)
+        deal = _create_deal(deal_data, operator_id, db, operator_needs_review)
         result["deal_id"] = deal.id
         logger.info(f"Deal created: {deal.deal_name} ({deal.id})")
 
@@ -109,7 +120,7 @@ def _create_or_update_operator(operator_data: Dict[str, Any], db: Session) -> Op
         return operator
 
 
-def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> Deal:
+def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session, operator_needs_review: bool = False) -> Deal:
     """
     Create a new deal with extracted data.
     """
@@ -120,7 +131,8 @@ def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> D
         "operator_id": operator_id,
         "deal_name": deal_data.get("deal_name", "Unnamed Deal"),
         "internal_code": deal_data.get("internal_code") or f"AUTO-{uuid.uuid4().hex[:8].upper()}",
-        "status": "received"  # New deals start in "received" status
+        "status": "received",  # New deals start in "received" status
+        "operator_needs_review": operator_needs_review
     }
 
     # Optional fields
@@ -267,13 +279,19 @@ def populate_fund_from_extraction(
         # 1. Create or update operator (required for fund creation)
         operator_id = None
         operator_data = extracted_data.get("operator", {})
+
         if operator_data and operator_data.get("name"):
+            # Normal case: operator name exists
             operator = _create_or_update_operator(operator_data, db)
             operator_id = operator.id
             result["operator_id"] = operator_id
             logger.info(f"Operator processed: {operator.name} ({operator.id})")
         else:
-            raise AutoPopulationError("No operator name found in extraction - cannot create fund")
+            # Fallback case: use "Unknown Operator" placeholder
+            operator = _create_or_update_operator({"name": UNKNOWN_OPERATOR_NAME}, db)
+            operator_id = operator.id
+            result["operator_id"] = operator_id
+            logger.warning(f"No operator name found for fund - using placeholder.")
 
         # 2. Create new fund with extracted data
         fund_data = extracted_data.get("fund", {})

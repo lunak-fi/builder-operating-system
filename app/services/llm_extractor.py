@@ -100,7 +100,7 @@ Please extract the following information and return it as valid JSON:
 
 {{
   "operator": {{
-    "name": "Company/operator name (required)",
+    "name": "Company/operator name (optional - use null if not clearly stated)",
     "legal_name": "Legal entity name if different (optional)",
     "website_url": "Website URL (optional)",
     "hq_city": "Headquarters city (optional)",
@@ -207,10 +207,9 @@ def _parse_extraction_response(response_text: str) -> Dict[str, Any]:
         data = json.loads(text)
 
         # Validate required fields
-        if "operator" not in data or "name" not in data["operator"]:
-            raise LLMExtractionError("Missing required field: operator.name")
         if "deal" not in data or "deal_name" not in data["deal"]:
             raise LLMExtractionError("Missing required field: deal.deal_name")
+        # Note: operator.name is now optional - will use "Unknown Operator" if missing
 
         # Normalize underwriting fields to handle any variations
         if "underwriting" in data:
@@ -297,7 +296,7 @@ Please extract the following information and return it as valid JSON:
 
 {{
   "operator": {{
-    "name": "Company/operator name (required)",
+    "name": "Company/operator name (optional - use null if not clearly stated)",
     "legal_name": "Legal entity name if different (optional)",
     "website_url": "Website URL (optional)",
     "hq_city": "Headquarters city (optional)",
@@ -371,10 +370,9 @@ def _parse_fund_extraction_response(response_text: str) -> Dict[str, Any]:
 
         data = json.loads(text)
 
-        if "operator" not in data or "name" not in data["operator"]:
-            raise LLMExtractionError("Missing required field: operator.name")
         if "fund" not in data or "name" not in data["fund"]:
             raise LLMExtractionError("Missing required field: fund.name")
+        # Note: operator.name is now optional - will use "Unknown Operator" if missing
 
         return data
 
