@@ -37,6 +37,3 @@ class Operator(Base):
     deals: Mapped[list["Deal"]] = relationship(
         "Deal", back_populates="operator", cascade="all, delete-orphan"
     )
-    funds: Mapped[list["Fund"]] = relationship(
-        "Fund", back_populates="operator", cascade="all, delete-orphan"
-    )
