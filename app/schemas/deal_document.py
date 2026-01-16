@@ -1,6 +1,16 @@
 from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
+from enum import Enum
+
+
+class DocumentType(str, Enum):
+    """Supported document types"""
+    OFFER_MEMO = "offer_memo"
+    FINANCIAL_MODEL = "financial_model"
+    TRANSCRIPT = "transcript"
+    EMAIL = "email"
+    OTHER = "other"
 
 
 class DealDocumentBase(BaseModel):
@@ -12,6 +22,10 @@ class DealDocumentBase(BaseModel):
     parsed_text: str | None = None
     parsing_status: str = "pending"
     parsing_error: str | None = None
+    file_size: int | None = None
+    metadata_json: dict | None = None
+    parent_document_id: UUID | None = None
+    version_number: int = 1
 
 
 class DealDocumentCreate(DealDocumentBase):
@@ -27,6 +41,10 @@ class DealDocumentUpdate(BaseModel):
     parsed_text: str | None = None
     parsing_status: str | None = None
     parsing_error: str | None = None
+    file_size: int | None = None
+    metadata_json: dict | None = None
+    parent_document_id: UUID | None = None
+    version_number: int | None = None
 
 
 class DealDocumentResponse(DealDocumentBase):

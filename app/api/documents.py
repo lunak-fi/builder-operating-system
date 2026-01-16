@@ -11,8 +11,9 @@ import logging
 from app.db.session import get_db
 from app.db.database import settings
 from app.models import DealDocument
-from app.schemas import DealDocumentResponse
+from app.schemas import DealDocumentResponse, ActivityFeedResponse, ActivityItem
 from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
+from app.services.document_parser import parse_document, DocumentParserError
 from app.services.llm_extractor import extract_deal_data_from_text, LLMExtractionError
 from app.services.auto_populate import populate_database_from_extraction, AutoPopulationError
 
@@ -20,33 +21,44 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+# Mapping of file extensions to document types
+ALLOWED_EXTENSIONS = {
+    '.pdf': 'offer_memo',
+    '.xlsx': 'financial_model',
+    '.xls': 'financial_model',
+    '.txt': 'transcript',
+    '.md': 'transcript',
+    '.eml': 'email'
+}
 
-def process_pdf_extraction(document_id: UUID, file_path: str, db_session_maker):
+
+def process_document_parsing(document_id: UUID, file_path: str, document_type: str, db_session_maker):
     """
-    Background task to extract text from uploaded PDF.
-    Updates the document record with extracted text and parsing status.
+    Background task to parse uploaded documents (PDF, Excel, text, email).
+    Updates the document record with extracted text, metadata, and parsing status.
     """
     # Create a new database session for background task
     db = db_session_maker()
     try:
-        logger.info(f"Starting PDF extraction for document {document_id}")
+        logger.info(f"Starting document parsing for document {document_id}, type: {document_type}")
 
-        # Extract text from PDF
-        extracted_text = extract_text_from_pdf(file_path)
+        # Parse document based on type
+        extracted_text, metadata = parse_document(file_path, document_type)
 
         # Update document record
         document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
         if document:
             document.parsed_text = extracted_text
+            document.metadata_json = metadata
             document.parsing_status = "completed"
             document.parsing_error = None
             db.commit()
-            logger.info(f"Successfully extracted {len(extracted_text)} characters from document {document_id}")
+            logger.info(f"Successfully parsed document {document_id}: {len(extracted_text)} characters")
         else:
             logger.error(f"Document {document_id} not found in database")
 
-    except PDFExtractionError as e:
-        logger.error(f"PDF extraction failed for document {document_id}: {str(e)}")
+    except DocumentParserError as e:
+        logger.error(f"Document parsing failed for document {document_id}: {str(e)}")
         # Update document with error status
         document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
         if document:
@@ -54,7 +66,7 @@ def process_pdf_extraction(document_id: UUID, file_path: str, db_session_maker):
             document.parsing_error = str(e)
             db.commit()
     except Exception as e:
-        logger.error(f"Unexpected error during PDF extraction for document {document_id}: {str(e)}")
+        logger.error(f"Unexpected error during document parsing for document {document_id}: {str(e)}")
         # Update document with error status
         document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
         if document:
@@ -73,12 +85,23 @@ async def upload_document(
     db: Session = Depends(get_db)
 ):
     """
-    Upload a PDF document for processing.
-    No deal or operator is created until extraction is run.
+    Upload a document for processing.
+    Supports: PDF, Excel (.xlsx, .xls), Text (.txt, .md), Email (.eml)
+    No deal is created until extraction is run.
     """
+    # Get file extension
+    file_extension = Path(file.filename).suffix.lower()
+
     # Validate file type
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    if file_extension not in ALLOWED_EXTENSIONS:
+        allowed = ', '.join(ALLOWED_EXTENSIONS.keys())
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not supported. Allowed: {allowed}"
+        )
+
+    # Auto-detect document type from extension
+    detected_type = ALLOWED_EXTENSIONS[file_extension]
 
     # Create upload directory if it doesn't exist
     upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
@@ -89,10 +112,11 @@ async def upload_document(
     filename = f"{doc_uuid}_{file.filename}"
     file_path = upload_dir / filename
 
-    # Save file
+    # Save file and get file size
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        file_size = file_path.stat().st_size
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
@@ -100,9 +124,10 @@ async def upload_document(
     db_document = DealDocument(
         id=doc_uuid,
         deal_id=None,
-        document_type=document_type,
+        document_type=detected_type,
         file_name=file.filename,
         file_url=str(file_path),
+        file_size=file_size,
         parsing_status="processing"
     )
 
@@ -110,16 +135,17 @@ async def upload_document(
     db.commit()
     db.refresh(db_document)
 
-    # Trigger background PDF extraction
+    # Trigger background document parsing
     from app.db.database import SessionLocal
     background_tasks.add_task(
-        process_pdf_extraction,
+        process_document_parsing,
         db_document.id,
         str(file_path),
+        detected_type,
         SessionLocal
     )
 
-    logger.info(f"Uploaded document {db_document.id}, scheduled PDF extraction")
+    logger.info(f"Uploaded document {db_document.id} ({detected_type}), scheduled parsing")
 
     return db_document
 
@@ -133,14 +159,23 @@ async def upload_deal_document(
     db: Session = Depends(get_db)
 ):
     """
-    Upload a PDF document for an existing deal.
-    WARNING: Running extraction on this will overwrite existing deal data.
-    Use POST /api/documents/upload instead to auto-create a new deal.
+    Upload a document for an existing deal.
+    Supports: PDF, Excel (.xlsx, .xls), Text (.txt, .md), Email (.eml)
+    WARNING: Running extraction on PDFs will overwrite existing deal data.
     """
+    # Get file extension
+    file_extension = Path(file.filename).suffix.lower()
 
     # Validate file type
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    if file_extension not in ALLOWED_EXTENSIONS:
+        allowed = ', '.join(ALLOWED_EXTENSIONS.keys())
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not supported. Allowed: {allowed}"
+        )
+
+    # Auto-detect document type from extension
+    detected_type = ALLOWED_EXTENSIONS[file_extension]
 
     # Create upload directory if it doesn't exist
     upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
@@ -150,36 +185,39 @@ async def upload_deal_document(
     filename = f"{deal_id}_{file.filename}"
     file_path = upload_dir / filename
 
-    # Save file
+    # Save file and get file size
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        file_size = file_path.stat().st_size
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
     # Create database record
     db_document = DealDocument(
         deal_id=deal_id,
-        document_type=document_type,
+        document_type=detected_type,
         file_name=file.filename,
         file_url=str(file_path),
-        parsing_status="processing"  # Changed from "pending" to "processing"
+        file_size=file_size,
+        parsing_status="processing"
     )
 
     db.add(db_document)
     db.commit()
     db.refresh(db_document)
 
-    # Trigger background PDF extraction
+    # Trigger background document parsing
     from app.db.database import SessionLocal
     background_tasks.add_task(
-        process_pdf_extraction,
+        process_document_parsing,
         db_document.id,
         str(file_path),
+        detected_type,
         SessionLocal
     )
 
-    logger.info(f"Scheduled PDF extraction for document {db_document.id}")
+    logger.info(f"Scheduled document parsing for document {db_document.id} ({detected_type})")
 
     return db_document
 
@@ -213,6 +251,44 @@ def get_document_status(document_id: UUID, db: Session = Depends(get_db)):
         "parsing_error": document.parsing_error,
         "has_parsed_text": document.parsed_text is not None
     }
+
+
+@router.get("/deals/{deal_id}/activity", response_model=ActivityFeedResponse)
+def get_deal_activity(deal_id: UUID, db: Session = Depends(get_db)):
+    """
+    Get activity feed for a deal.
+    Returns a timeline of all activities (document uploads, versions) sorted chronologically.
+    """
+    activities = []
+
+    # Get all documents for this deal
+    documents = db.query(DealDocument).filter(
+        DealDocument.deal_id == deal_id
+    ).order_by(DealDocument.created_at.desc()).all()
+
+    for doc in documents:
+        # Determine activity type
+        if doc.parent_document_id:
+            activity_type = "document_version_uploaded"
+        else:
+            activity_type = "document_uploaded"
+
+        activities.append(ActivityItem(
+            id=str(doc.id),
+            type=activity_type,
+            timestamp=doc.created_at,
+            data={
+                "document_id": str(doc.id),
+                "document_type": doc.document_type,
+                "file_name": doc.file_name,
+                "file_size": doc.file_size,
+                "version_number": doc.version_number,
+                "parent_document_id": str(doc.parent_document_id) if doc.parent_document_id else None,
+                "parsing_status": doc.parsing_status
+            }
+        ))
+
+    return ActivityFeedResponse(activities=activities)
 
 
 @router.post("/{document_id}/extract")
@@ -279,6 +355,104 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Unexpected error during extraction: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+
+@router.post("/{document_id}/new-version", response_model=DealDocumentResponse, status_code=201)
+async def upload_document_version(
+    document_id: UUID,
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload a new version of an existing document.
+    The new version will be linked to the original document via parent_document_id.
+    """
+    # Get the parent document
+    parent_document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+    if not parent_document:
+        raise HTTPException(status_code=404, detail="Parent document not found")
+
+    # Get file extension
+    file_extension = Path(file.filename).suffix.lower()
+
+    # Validate file type matches parent document type
+    if file_extension not in ALLOWED_EXTENSIONS:
+        allowed = ', '.join(ALLOWED_EXTENSIONS.keys())
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not supported. Allowed: {allowed}"
+        )
+
+    detected_type = ALLOWED_EXTENSIONS[file_extension]
+
+    # Create upload directory if it doesn't exist
+    upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate unique filename
+    doc_uuid = uuid.uuid4()
+    filename = f"{doc_uuid}_{file.filename}"
+    file_path = upload_dir / filename
+
+    # Save file and get file size
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        file_size = file_path.stat().st_size
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    # Calculate new version number
+    # Find the highest version number among the parent and its versions
+    if parent_document.parent_document_id is None:
+        # Parent is the original document
+        original_doc_id = parent_document.id
+        current_max_version = parent_document.version_number
+    else:
+        # Parent is already a version, find the original
+        original_doc_id = parent_document.parent_document_id
+        current_max_version = parent_document.version_number
+
+    # Find all versions of the original document
+    all_versions = db.query(DealDocument).filter(
+        (DealDocument.id == original_doc_id) |
+        (DealDocument.parent_document_id == original_doc_id)
+    ).all()
+
+    max_version = max([v.version_number for v in all_versions]) if all_versions else 0
+    new_version_number = max_version + 1
+
+    # Create database record for new version
+    db_document = DealDocument(
+        id=doc_uuid,
+        deal_id=parent_document.deal_id,  # Inherit deal_id from parent
+        document_type=detected_type,
+        file_name=file.filename,
+        file_url=str(file_path),
+        file_size=file_size,
+        parent_document_id=original_doc_id,  # Link to original document
+        version_number=new_version_number,
+        parsing_status="processing"
+    )
+
+    db.add(db_document)
+    db.commit()
+    db.refresh(db_document)
+
+    # Trigger background document parsing
+    from app.db.database import SessionLocal
+    background_tasks.add_task(
+        process_document_parsing,
+        db_document.id,
+        str(file_path),
+        detected_type,
+        SessionLocal
+    )
+
+    logger.info(f"Uploaded version {new_version_number} of document {original_doc_id}")
+
+    return db_document
 
 
 @router.delete("/{document_id}", status_code=204)
