@@ -284,7 +284,8 @@ def get_deal_activity(deal_id: UUID, db: Session = Depends(get_db)):
                 "file_size": doc.file_size,
                 "version_number": doc.version_number,
                 "parent_document_id": str(doc.parent_document_id) if doc.parent_document_id else None,
-                "parsing_status": doc.parsing_status
+                "parsing_status": doc.parsing_status,
+                "metadata_json": doc.metadata_json
             }
         ))
 
