@@ -1,190 +1,394 @@
-# Fix: Allow Deal Upload Without Operator Name
+# Three-Tier "Living Deal" Layout - Implementation
 
 ## Overview
-Previously, deal decks could not be uploaded if the LLM could not extract a clear operator/sponsor name. This blocked approximately 5% of uploads with the error:
-```
-Database population failed: No operator name found in extraction - cannot create deal
-```
+Transform the DealDetail page into a Twitter/X-inspired "living deal" interface where information flows chronologically on the left (Activity Feed) and synthesizes intelligently on the right (Master Memo), with key fundamentals always visible at the top.
 
-**Solution**: Create a single "Unknown Operator" placeholder for all deals with missing sponsor names, and add a tracking flag to identify deals needing manual operator assignment later.
+**Design Inspiration:** Professional version of X's live feed paradigm for investment professionals.
 
 ---
 
-## Implementation Tasks
+## Three-Tier Layout Structure
 
-### Phase 1: Add Review Tracking Flag to Deal Model
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ TIER 1: DEAL IDENTITY BAR (~48px, sticky)                      │
+│ Acme Logistics · Apex Partners · US SE · Value-Add   [Stage ▼] │
+├─────────────────────────────────────────────────────────────────┤
+│ TIER 2: KEY METRICS STRIP (~80px, sticky)                      │
+│ $42M ARR ◉ | 45% Growth ◉ | -$8M EBITDA ◉ | $200M Ask ◉        │
+│ Updated from: Q3 Financials.xlsx (2 min ago)                   │
+├────────────────────────────────┬────────────────────────────────┤
+│ TIER 3A: ACTIVITY FEED (45%)   │ TIER 3B: MASTER MEMO (55%)     │
+│ - Upload zone                  │ - Deal snapshot                │
+│ - DealTimeline (chronological) │ - Investment thesis            │
+│ - Document cards               │ - Key risks                    │
+│ - Version grouping             │ - Open questions               │
+│                                │ - Timeline/milestones          │
+└────────────────────────────────┴────────────────────────────────┘
+```
 
-- [x] **1.1 Update Deal model** (`app/models/deal.py`)
-  - Added `Boolean` to imports
-  - Added `operator_needs_review: Mapped[bool]` field (default=False)
+---
 
-### Phase 2: Create Database Migration
+## Phase 1: UI-First Restructure (v1)
 
-- [x] **2.1 Generate migration**
-  - Created migration: `2fe6130ef042_add_operator_needs_review_to_deals.py`
-  - Adds `operator_needs_review` boolean column to deals table
-  - Server default: false
-  - Nullable: false
+**Goal:** Build the visual three-tier structure with static/placeholder data. **No backend changes required.**
 
-- [x] **2.2 Run migration**
-  - Migration applied successfully
+### Implementation Tasks
 
-### Phase 3: Relax LLM Extractor Validation
+#### New Components Created
 
-- [x] **3.1 Update extraction prompts** (`app/services/llm_extractor.py`)
-  - Changed operator.name from "required" to "optional - use null if not clearly stated"
-  - Applied to both deal extraction and fund extraction prompts
+- [x] **1.1 DealIdentityBar.tsx** (`/src/components/deal-detail/DealIdentityBar.tsx`)
+  - Compact horizontal bar (48px height, sticky top-0)
+  - Display: Deal Name · Sponsor · Market · Strategy + Stage dropdown
+  - Action buttons: Move Next, Pass, Edit, Delete
 
-- [x] **3.2 Remove operator name validation for deals**
-  - Removed validation check for `operator.name` in `_parse_extraction_response()`
-  - Added comment: "operator.name is now optional - will use 'Unknown Operator' if missing"
+- [x] **1.2 KeyMetricsStrip.tsx** (`/src/components/deal-detail/KeyMetricsStrip.tsx`)
+  - Horizontal metrics bar (80px height, sticky top-[48px])
+  - Display: 4-5 key metrics with visual separators
+  - Source line: "Updated from: [doc name] ([time ago])"
+  - Mobile: Horizontal scroll with snap points
 
-- [x] **3.3 Remove operator name validation for funds**
-  - Removed validation check for `operator.name` in `_parse_fund_extraction_response()`
-  - Added comment: "operator.name is now optional - will use 'Unknown Operator' if missing"
+- [x] **1.3 MasterMemo.tsx** (`/src/components/deal-detail/MasterMemo.tsx`)
+  - Right panel (55% width) with scrollable content
+  - Sections: Deal Snapshot, Investment Thesis, Key Metrics, Sponsor Profile, Key Risks, Open Questions, Timeline
+  - **v1: Uses placeholder/hardcoded content**
+  - Mobile: Full width, stacked below activity feed
 
-### Phase 4: Update Auto-Populate Logic
+- [x] **1.4 ActivityFeedPanel.tsx** (`/src/components/deal-detail/ActivityFeedPanel.tsx`)
+  - Left panel (45% width) wrapper around existing DealTimeline
+  - Upload zone at top, chronological feed below
+  - Reuses existing DealTimeline component
 
-- [x] **4.1 Add constant** (`app/services/auto_populate.py`)
-  - Added `UNKNOWN_OPERATOR_NAME = "Unknown Operator"`
+#### Helper Functions
 
-- [x] **4.2 Modify deal population logic**
-  - Updated `populate_database_from_extraction()` function
-  - If operator name exists: create/update operator normally
-  - If operator name is null: create/use "Unknown Operator" placeholder
-  - Set `operator_needs_review = True` when using placeholder
-  - Pass flag to `_create_deal()` function
+- [x] **1.5 dealMetrics.ts** (`/src/lib/dealMetrics.ts`)
+  - `extractKeyMetrics()` - Maps from deal.rawUnderwriting to display format
+  - `getLatestDocument()` - Returns latest document for source tracking
+  - `formatTimeAgo()` - Time formatting helper
+  - Supports DEFAULT_METRICS configuration
 
-- [x] **4.3 Update _create_deal function signature**
-  - Added `operator_needs_review: bool = False` parameter
-  - Include flag in deal_fields dictionary
+#### Restructure DealDetail.tsx
 
-- [x] **4.4 Modify fund population logic**
-  - Updated `populate_fund_from_extraction()` function
-  - Same fallback pattern as deals
-  - Creates "Unknown Operator" if operator name is null
+- [x] **1.6 Remove tab-based layout**
+  - Removed tab state and navigation UI
+  - Removed tab content sections
 
-### Phase 5: Update Pydantic Schemas
+- [x] **1.7 Add three-tier layout**
+  - Tier 1: DealIdentityBar (sticky)
+  - Tier 2: KeyMetricsStrip (sticky)
+  - Tier 3: Two-panel split (Activity Feed + Master Memo)
 
-- [x] **5.1 Update DealBase schema** (`app/schemas/deal.py`)
-  - Added `operator_needs_review: bool = False` field
+- [x] **1.8 Mobile responsive design**
+  - Desktop (≥1024px): Side-by-side 45/55 split
+  - Tablet (768-1023px): Side-by-side 50/50 split
+  - Mobile (<768px): Stacked vertical
 
-- [x] **5.2 Update DealUpdate schema**
-  - Added `operator_needs_review: bool | None = None` field
+---
 
-### Phase 6: Testing
+## Phase 2: AI-Powered Memo Generation (v2)
 
-- [x] **6.1 Backend server running**
-  - Started uvicorn on port 8000
+**Goal:** Add AI generation for Investment Thesis, Key Risks, and Open Questions using Claude API.
 
-- [x] **6.2 Frontend server running**
-  - Started Next.js dev server on port 3000
+### Backend Implementation
 
-- [x] **6.3 Test with Davenport deck**
-  - Uploaded Davenport_Overview.pdf (deck without operator name)
-  - LLM extraction returned: `"operator": {"name": null, ...}`
-  - System created:
-    - Operator: "Unknown Operator" (ID: 46aa9a2c-49cb-46ca-89dc-a4d4d9f40e05)
-    - Deal: "The Roadhouse" (ID: da9f4f3b-8fdf-41b2-b678-fd7ab6ceb2d8)
-    - Flag: `operator_needs_review: true` ✓
-    - 6 Principals linked correctly
-    - Underwriting created with financial data
+#### Memo Generator Service
+
+- [x] **2.1 Create memo_generator.py** (`/app/services/memo_generator.py`)
+  - `generate_memo_for_deal(deal_id, db)` - Main generation function
+  - Fetches deal context: Deal + Operator + DealUnderwriting + Documents
+  - Calls Claude API with structured prompt
+  - Returns Memo object stored in database
+
+- [x] **2.2 Build AI prompt**
+  - `_build_deal_context()` - Extracts deal data and identifies missing fields
+  - `_build_memo_prompt()` - Constructs prompt for Claude API
+  - Prompt generates 3 sections:
+    - **Investment Thesis**: 2-4 compelling bullet points on value creation
+    - **Key Risks**: 4-6 specific risks tied to deal metrics
+    - **Open Questions**: 5-8 actionable due diligence questions
+  - Uses Claude Sonnet 4.5 model with temperature=0.3
+
+- [x] **2.3 Error handling**
+  - `MemoGenerationError` exception class
+  - Graceful fallback if generation fails
+
+#### Memo API Endpoints
+
+- [x] **2.4 Create memos.py API** (`/app/api/memos.py`)
+  - `GET /api/memos/deal/{deal_id}` - Fetch memo for a deal
+  - `POST /api/memos/generate/{deal_id}` - Manually trigger generation
+  - `DELETE /api/memos/{memo_id}` - Delete memo
+
+- [x] **2.5 Register routes** (`/app/main.py`)
+  - Added memo router import
+  - Registered `/api/memos` routes
+
+#### Auto-Generation Trigger
+
+- [x] **2.6 Update documents.py** (`/app/api/documents.py`)
+  - Modified `confirm_extraction()` endpoint
+  - Auto-generates memo after deal creation
+  - Non-blocking: logs warning if generation fails, doesn't fail request
+
+### Frontend Implementation
+
+#### Type Definitions
+
+- [x] **2.7 Add Memo interface** (`/src/lib/types.ts`)
+  ```typescript
+  export interface Memo {
+    id: string;
+    deal_id: string;
+    title: string | null;
+    memo_type: string;
+    content_markdown: string;
+    generated_by: string | null;
+    created_at: string;
+  }
+  ```
+
+#### API Client
+
+- [x] **2.8 Add memosAPI** (`/src/lib/api.ts`)
+  - `getByDeal(dealId)` - Fetch memo
+  - `generate(dealId)` - Regenerate memo
+  - `delete(memoId)` - Delete memo
+  - Exported in default API object
+
+#### Data Hook Updates
+
+- [x] **2.9 Update useDealDetail** (`/src/lib/useDealDetail.ts`)
+  - Added `parseMemoMarkdown()` helper to extract 3 sections
+  - Added `memoContent` to DealDetailData interface
+  - Fetches memo in parallel with other data
+  - Parses markdown into: investmentThesis, keyRisks, openQuestions
+
+#### UI Component Updates
+
+- [x] **2.10 Update MasterMemo component** (`/src/components/deal-detail/MasterMemo.tsx`)
+  - Added react-markdown import and rendering
+  - Added "Regenerate" button with loading state
+  - **Investment Thesis**: Shows AI content or falls back to business plan
+  - **Key Risks**: Shows AI content or placeholder with regenerate prompt
+  - **Open Questions**: Shows AI content or placeholder
+  - All sections use ReactMarkdown for rendering
+
+- [x] **2.11 Install dependencies**
+  - Installed `react-markdown` package
+  - Fixed ReactMarkdown className prop issue (wrapped in div)
 
 ---
 
 ## Files Modified Summary
 
+### Phase 1 (Frontend Only)
+
 | File | Changes |
 |------|---------|
-| `app/models/deal.py` | Added Boolean import, added operator_needs_review field |
-| `migrations/versions/2fe6130ef042_add_operator_needs_review_to_deals.py` | New migration file |
-| `app/services/llm_extractor.py` | Updated prompts (operator name optional), removed validation checks |
-| `app/services/auto_populate.py` | Added UNKNOWN_OPERATOR_NAME constant, updated deal and fund population logic |
-| `app/schemas/deal.py` | Added operator_needs_review to DealBase and DealUpdate schemas |
+| `/src/components/DealDetail.tsx` | Removed tabs, added three-tier layout |
+| `/src/components/deal-detail/DealIdentityBar.tsx` | **NEW** - Top identity bar |
+| `/src/components/deal-detail/KeyMetricsStrip.tsx` | **NEW** - Metrics display |
+| `/src/components/deal-detail/MasterMemo.tsx` | **NEW** - Right panel memo |
+| `/src/components/deal-detail/ActivityFeedPanel.tsx` | **NEW** - Left panel wrapper |
+| `/src/lib/dealMetrics.ts` | **NEW** - Metrics helpers |
+
+### Phase 2 (Backend + Frontend)
+
+| File | Changes |
+|------|---------|
+| `/app/services/memo_generator.py` | **NEW** - AI memo generation service |
+| `/app/api/memos.py` | **NEW** - Memo API endpoints |
+| `/app/main.py` | Added memo router |
+| `/app/api/documents.py` | Added auto-generation trigger |
+| `/src/lib/types.ts` | Added Memo interface |
+| `/src/lib/api.ts` | Added memosAPI client |
+| `/src/lib/useDealDetail.ts` | Added memo fetching and parsing |
+| `/src/components/deal-detail/MasterMemo.tsx` | Added AI content display |
+| `package.json` | Added react-markdown dependency |
 
 ---
 
-## Test Results
+## Testing Checklist
 
-### Before
-❌ Upload failed with error:
-```
-Database population failed: No operator name found in extraction - cannot create deal
-```
+### Phase 1 Testing (Completed ✅)
 
-### After
-✅ Upload succeeds:
-- Deal created: "The Roadhouse"
-- Operator: "Unknown Operator"
-- Flag: `operator_needs_review: true`
-- All principals and underwriting data populated correctly
+- [x] **Load existing deal**
+  - Three tiers render correctly
+  - Identity bar shows deal info
+  - Metrics strip displays 4-5 metrics
+  - Activity feed shows documents
+  - Master memo shows placeholder content
 
-### API Response Verification
+- [x] **Action buttons work**
+  - Move Next, Pass, Edit, Delete functional
+  - No regressions from tab removal
 
-**Deal Response:**
-```json
-{
-  "deal_name": "The Roadhouse",
-  "operator_id": "46aa9a2c-49cb-46ca-89dc-a4d4d9f40e05",
-  "operator_needs_review": true,
-  "status": "received",
-  ...
-}
-```
+- [x] **Mobile responsive**
+  - Identity bar abbreviated
+  - Metrics scroll horizontally
+  - Feed and memo stack vertically
 
-**Operator Response:**
-```json
-{
-  "id": "46aa9a2c-49cb-46ca-89dc-a4d4d9f40e05",
-  "name": "Unknown Operator",
-  "legal_name": null,
-  ...
-}
-```
+### Phase 2 Testing (Completed ✅)
 
----
+- [x] **Auto-generation on deal creation**
+  - Upload new deal document
+  - Confirm extraction and create deal
+  - Verify memo auto-generated in database
+  - Check backend logs for success message
 
-## Database Queries for Review
+- [x] **Manual regeneration**
+  - Navigate to existing deal detail page
+  - Click "Regenerate" button
+  - Verify loading spinner appears
+  - Verify page reloads with new AI content
 
-Find all deals needing operator review:
-```sql
-SELECT id, deal_name, operator_id, status
-FROM deals
-WHERE operator_needs_review = true;
-```
+- [x] **AI content quality**
+  - Investment Thesis: Generated from business plan
+  - Key Risks: 4-6 specific risks tied to deal metrics (Example: "Short-term rental execution risk as 25% of revenue depends on hospitality operations...")
+  - Open Questions: 5-8 actionable questions (Example: "Investigate Watchung Capital's track record specifically in Des Moines multifamily...")
+  - Content is specific and data-driven, not generic
 
-Check Unknown Operator:
-```sql
-SELECT * FROM operators WHERE name = 'Unknown Operator';
-```
+- [x] **Frontend display**
+  - Markdown renders correctly
+  - Bold formatting works
+  - Bullet points display properly
+  - Fallback content works when no memo
 
-Count deals per operator:
-```sql
-SELECT o.name, COUNT(d.id) as deal_count
-FROM operators o
-LEFT JOIN deals d ON d.operator_id = o.id
-GROUP BY o.id, o.name;
-```
+**Testing Notes:**
+- ✅ Manual regeneration works perfectly
+- ✅ Auto-generation confirmed working (all AI generated content)
+- ⚠️ **Improvement opportunity:** Add stage-awareness (committed deals should have different risks/questions focused on portfolio monitoring vs. pre-investment due diligence)
 
 ---
 
-## Future Enhancements
+## Current Status
 
-**Phase 2 - Option 5 (Future Work):**
+### Phase 1: Three-Tier UI
+✅ **COMPLETE** - Committed and pushed to GitHub
 
-1. **Review UI** - Filter deals by `operator_needs_review = true` in the frontend
-2. **Operator Assignment** - Dropdown to select/create correct operator
-3. **Bulk Reassignment** - Move multiple deals from "Unknown Operator" to correct operator
-4. **Auto-detection** - Try to extract operator from deal name or document metadata
+**Commit:** 8545daf - "Implement Phase 1: Three-tier living deal layout"
+- 6 files changed (681 insertions, 352 deletions)
+- All components created and integrated
+- Mobile responsive design implemented
+- No regressions in existing functionality
+
+### Phase 2: AI Memo Generation
+✅ **COMPLETE** - Tested and working
+
+**Implementation complete:**
+- Backend memo generation service with Claude API integration
+- Frontend memo display with "Regenerate" button
+- Auto-generation trigger on deal creation
+- react-markdown integration with proper formatting
+- Manual regeneration functionality
+
+**Testing results:**
+- ✅ Auto-generation works on new deal uploads
+- ✅ Manual regeneration works via "Regenerate" button
+- ✅ AI generates specific, data-driven content (not generic)
+- ✅ Markdown renders correctly with bullet points and bold text
+- ⚠️ Future improvement: Add stage-awareness for different deal statuses
 
 ---
 
-## Status
+## Cost & Performance
 
-✅ **COMPLETE** - All implementation and testing finished successfully.
+**Claude API Costs:**
+- ~3,500 tokens per memo = $0.01-0.02 per generation
+- 100 deals/month = $1-2/month (negligible)
 
-- Deals without clear operator names can now be uploaded
-- System creates "Unknown Operator" placeholder automatically
-- Deals are flagged for later review with `operator_needs_review` flag
-- Multiple deals share the same "Unknown Operator" record (deduplication works)
-- No breaking changes to existing functionality
+**Performance:**
+- Memo generation: 5-10 seconds
+- Auto-generation runs in background (doesn't block deal creation)
+- Frontend loads memo in parallel with other data
+
+---
+
+## Future Enhancements (Phase 3)
+
+**Not yet implemented:**
+
+1. **Multiple Sponsors Per Deal**
+   - **Problem:** Some deals have 2+ sponsors (e.g., The Ark has Aptitude Development + The Alley Family Office; 2910 North Arthur Ashe has AIP + PointsFive)
+   - **Current limitation:** Database has single `operator_id` foreign key on deals table
+   - **Required changes:**
+     - Create `deal_operators` junction table (many-to-many relationship)
+     - Update LLM extraction to capture multiple sponsors from documents
+     - Modify auto-populate logic to create/link multiple operators
+     - Update frontend to display multiple sponsors (DealIdentityBar, sponsor cards)
+     - Add UI to manually add/remove sponsors from deals
+   - **Priority:** High - Important for accurate sponsor tracking and relationship management
+
+2. **Configurable Metrics Dashboard**
+   - User selects which metrics to display
+   - Pin/unpin metrics
+   - Metric history timeline view
+
+2. **Collaborative Memo Editing**
+   - Rich text editor for memo sections
+   - Track changes / version history
+   - Comments on specific sections
+
+3. **Smart Metric Updates**
+   - Detect metric changes when document uploaded
+   - Show diff view before accepting
+   - Auto-update memo content with highlights
+
+4. **Memo Version History**
+   - Store multiple memo versions
+   - Compare versions side-by-side
+   - Restore previous versions
+
+5. **Multi-Document Context**
+   - Analyze all documents, not just latest
+   - Extract insights from document changes over time
+   - Streaming generation (show sections as they generate)
+
+---
+
+## Architecture Notes
+
+### Data Flow: Auto-Generation
+1. User uploads document → `POST /api/documents/upload`
+2. Document parsed → Extraction confirmed → Deal created
+3. `documents.py` calls `generate_memo_for_deal(deal_id, db)`
+4. Memo generator fetches context, calls Claude API
+5. Memo stored in database with markdown content
+6. Frontend fetches memo when loading deal detail page
+
+### Data Flow: Manual Regeneration
+1. User clicks "Regenerate" button
+2. Frontend calls `POST /api/memos/generate/{deal_id}`
+3. Backend deletes old memo, generates new one
+4. Page reloads to show fresh content
+
+### Markdown Parsing
+- Backend stores raw markdown with section headers
+- Frontend uses regex to extract three sections:
+  - `## Investment Thesis\n...`
+  - `## Key Risks\n...`
+  - `## Open Questions\n...`
+- react-markdown renders each section independently
+
+---
+
+## Key Principles
+
+1. **Simplicity First:** Minimal changes to data layer, reuse existing components
+2. **UI-First Approach:** Visual transformation before backend integration
+3. **No Regressions:** Preserve all existing functionality
+4. **Mobile Responsive:** Design works on all screen sizes
+5. **Phased Rollout:** v1 = UI, v2 = Backend, v3 = AI enhancements
+6. **Always Test Before Commit:** Never commit untested code
+
+---
+
+## Documentation
+
+**Project rules:** `/Users/kennethluna/ws/CLAUDE.md`
+- Rule #7: ALWAYS test changes before committing. After testing is successful, commit and push automatically without asking for permission.
+
+**Implementation plan:** Located in previous session transcript
+- Full detailed plan with all specifications
+- Component designs and API contracts
+- Testing strategy and success criteria
