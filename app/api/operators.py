@@ -20,6 +20,20 @@ def create_operator(operator: OperatorCreate, db: Session = Depends(get_db)):
     return db_operator
 
 
+@router.get("/search", response_model=List[OperatorResponse])
+def search_operators(q: str, db: Session = Depends(get_db)):
+    """
+    Search for operators by name or legal_name (case-insensitive fuzzy match).
+    Returns up to 10 results for autocomplete.
+    """
+    search_term = f"%{q}%"
+    operators = db.query(Operator).filter(
+        (Operator.name.ilike(search_term)) |
+        (Operator.legal_name.ilike(search_term))
+    ).limit(10).all()
+    return operators
+
+
 @router.get("/", response_model=List[OperatorResponse])
 def list_operators(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """List all operators with pagination"""

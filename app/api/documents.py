@@ -10,8 +10,9 @@ import logging
 
 from app.db.session import get_db
 from app.db.database import settings
-from app.models import DealDocument
+from app.models import DealDocument, Operator
 from app.schemas import DealDocumentResponse, ActivityFeedResponse, ActivityItem
+from pydantic import BaseModel
 from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
 from app.services.document_parser import parse_document, DocumentParserError
 from app.services.llm_extractor import extract_deal_data_from_text, LLMExtractionError
@@ -20,6 +21,12 @@ from app.services.auto_populate import populate_database_from_extraction, AutoPo
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+
+class ConfirmExtractionRequest(BaseModel):
+    """Request body for confirming extraction and creating deal"""
+    operator_id: UUID
+    extracted_data: dict
 
 # Mapping of file extensions to document types
 ALLOWED_EXTENSIONS = {
@@ -295,15 +302,15 @@ def get_deal_activity(deal_id: UUID, db: Session = Depends(get_db)):
 @router.post("/{document_id}/extract")
 def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
     """
-    Extract structured data from document using LLM and populate database.
+    Extract structured data from document using LLM (preview only).
 
     This endpoint:
     1. Retrieves the parsed text from the document
     2. Sends it to Claude AI for structured extraction
-    3. Creates records from extracted data: Operator, Deal, Principals, Underwriting
-    4. Links the document to the newly created deal
+    3. Searches for matching operators by extracted sponsor name
+    4. Returns extraction preview WITHOUT creating deal records
 
-    Returns the extracted data and IDs of created records.
+    Returns extracted data and operator matches for user confirmation.
     """
     # Get document
     document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
@@ -326,10 +333,85 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
         extracted_data = extract_deal_data_from_text(document.parsed_text)
         logger.info(f"Deal LLM extraction completed for document {document_id}")
 
-        # Populate database with deal data
+        # Search for matching operators by extracted sponsor name
+        operator_matches = []
+        suggested_operator = None
+        operator_data = extracted_data.get("operator", {})
+
+        if operator_data and operator_data.get("name"):
+            extracted_name = operator_data.get("name")
+            suggested_operator = {"name": extracted_name}
+
+            # Search for operators matching the extracted name
+            search_term = f"%{extracted_name}%"
+            matching_operators = db.query(Operator).filter(
+                (Operator.name.ilike(search_term)) |
+                (Operator.legal_name.ilike(search_term))
+            ).limit(10).all()
+
+            operator_matches = [
+                {
+                    "id": str(op.id),
+                    "name": op.name,
+                    "legal_name": op.legal_name,
+                    "hq_city": op.hq_city,
+                    "hq_state": op.hq_state
+                }
+                for op in matching_operators
+            ]
+
+            logger.info(f"Found {len(operator_matches)} matching operators for '{extracted_name}'")
+
+        return {
+            "success": True,
+            "document_id": str(document_id),
+            "extracted_data": extracted_data,
+            "operator_matches": operator_matches,
+            "suggested_operator": suggested_operator
+        }
+
+    except LLMExtractionError as e:
+        logger.error(f"LLM extraction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"LLM extraction failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error during extraction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+
+@router.post("/{document_id}/confirm")
+def confirm_extraction(
+    document_id: UUID,
+    request: ConfirmExtractionRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Confirm sponsor selection and create deal from extracted data.
+
+    This endpoint:
+    1. Validates the selected operator exists
+    2. Creates deal records using the confirmed operator_id
+    3. Links the document to the newly created deal
+
+    Returns the created deal data and record IDs.
+    """
+    # Get document
+    document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Validate operator exists
+    from app.models import Operator
+    operator = db.query(Operator).filter(Operator.id == request.operator_id).first()
+    if not operator:
+        raise HTTPException(status_code=404, detail="Selected operator not found")
+
+    try:
+        # Create deal with confirmed operator
+        logger.info(f"Creating deal for document {document_id} with operator {request.operator_id}")
         result = populate_database_from_extraction(
-            extracted_data=extracted_data,
+            extracted_data=request.extracted_data,
             document_id=document_id,
+            operator_id=request.operator_id,
             db=db
         )
 
@@ -337,25 +419,22 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
         document.deal_id = result["deal_id"]
         db.commit()
 
-        logger.info(f"Deal database population completed for document {document_id}, deal_id={result['deal_id']}")
+        logger.info(f"Deal created successfully: deal_id={result['deal_id']}")
 
         return {
             "success": True,
-            "document_id": document_id,
+            "document_id": str(document_id),
             "classification": "deal",
-            "extracted_data": extracted_data,
+            "extracted_data": request.extracted_data,
             "populated_records": result
         }
 
-    except LLMExtractionError as e:
-        logger.error(f"LLM extraction failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"LLM extraction failed: {str(e)}")
     except AutoPopulationError as e:
         logger.error(f"Database population failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database population failed: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error during extraction: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+        logger.error(f"Unexpected error during deal creation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Deal creation failed: {str(e)}")
 
 
 @router.post("/{document_id}/new-version", response_model=DealDocumentResponse, status_code=201)
