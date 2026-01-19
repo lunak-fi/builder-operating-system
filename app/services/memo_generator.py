@@ -55,8 +55,8 @@ def generate_memo_for_deal(deal_id: UUID, db: Session) -> Memo:
             document_text = documents[0].parsed_text[:10000]
 
         # Generate memo content using Claude API
-        logger.info(f"Generating memo for deal {deal_id}")
-        memo_markdown = _generate_memo_content(context, document_text)
+        logger.info(f"Generating memo for deal {deal_id} (status: {deal.status})")
+        memo_markdown = _generate_memo_content(context, document_text, deal.status)
 
         # Delete existing memo if any
         db.query(Memo).filter(Memo.deal_id == deal_id).delete()
@@ -146,11 +146,11 @@ def _build_deal_context(
     return context
 
 
-def _generate_memo_content(context: Dict[str, Any], document_text: str) -> str:
+def _generate_memo_content(context: Dict[str, Any], document_text: str, deal_status: str) -> str:
     """Call Claude API to generate memo content"""
 
     # Build the prompt
-    prompt = _build_memo_prompt(context, document_text)
+    prompt = _build_memo_prompt(context, document_text, deal_status)
 
     # Initialize Claude client
     settings = LLMSettings()
@@ -181,7 +181,7 @@ def _generate_memo_content(context: Dict[str, Any], document_text: str) -> str:
     return response_text
 
 
-def _build_memo_prompt(context: Dict[str, Any], document_text: str) -> str:
+def _build_memo_prompt(context: Dict[str, Any], document_text: str, deal_status: str) -> str:
     """Build the prompt for Claude to generate the memo"""
 
     # Format currency values
@@ -206,7 +206,103 @@ def _build_memo_prompt(context: Dict[str, Any], document_text: str) -> str:
             return "Not provided"
         return f"{val:.2f}x"
 
-    prompt = f"""You are an investment analyst generating an investment memo for a commercial real estate deal. Analyze the following deal information and generate a comprehensive memo with three specific sections.
+    # Check if this is a committed deal (portfolio monitoring mode)
+    is_committed = deal_status == "committed"
+
+    if is_committed:
+        # Prompt for COMMITTED deals - portfolio monitoring focus
+        prompt = f"""You are an investment analyst generating a portfolio monitoring memo for a COMMITTED commercial real estate deal. This deal is already in the portfolio, so focus on tracking execution and performance rather than evaluating whether to invest.
+
+DEAL INFORMATION:
+---
+Deal Name: {context['deal_name']}
+Strategy: {context['strategy']}
+Asset Type: {context['asset_type']}
+Market: {context['market']}
+Sponsor: {context['sponsor_name']}
+
+Property Details:
+- Units: {context['num_units'] or 'Not provided'}
+- Square Feet: {context['building_sf'] or 'Not provided'}
+- Year Built: {context['year_built'] or 'Not provided'}
+- Location: {context['address'] or 'Not provided'}
+
+Business Plan Summary:
+{context['business_plan']}
+
+Underwriting Metrics (As Committed):
+- Total Project Cost: {fmt_currency(context['total_project_cost'])}
+- Land/Acquisition Cost: {fmt_currency(context['land_cost'])}
+- Hard Costs: {fmt_currency(context['hard_cost'])}
+- Soft Costs: {fmt_currency(context['soft_cost'])}
+- Equity Required: {fmt_currency(context['equity_required'])}
+- Loan Amount: {fmt_currency(context['loan_amount'])}
+- LTV: {fmt_pct(context['ltv'])}
+- LTC: {fmt_pct(context['ltc'])}
+- Levered IRR (Projected): {fmt_pct(context['levered_irr'])}
+- Equity Multiple (Projected): {fmt_mult(context['equity_multiple'])}
+- Exit Cap Rate (Assumed): {fmt_pct(context['exit_cap_rate'])}
+- DSCR at Stabilization (Projected): {context['dscr_at_stabilization'] or 'Not provided'}
+- Hold Period: {context['hold_period_years'] or 'Not provided'} years
+
+LATEST UPDATE DOCUMENT:
+{document_text[:10000] if document_text else 'No recent update available'}
+
+---
+
+INSTRUCTIONS:
+
+Generate a portfolio monitoring memo with EXACTLY these three sections:
+
+## Execution Status
+
+Write 3-5 bullet points that summarize WHERE WE ARE in the business plan execution. Focus on:
+- Current phase of the project (e.g., construction 60% complete, lease-up phase, stabilized, etc.)
+- Key milestones achieved or missed since commitment
+- Timeline updates or changes from original plan
+- Any budget updates (over/under on costs)
+- Reference specific numbers from the latest update when possible
+
+Use markdown bullet points with bold key phrases.
+
+## Current Risks & Concerns
+
+Identify 4-6 ACTIVE risks that matter NOW for this portfolio asset. Consider:
+- Execution risks (construction delays, cost overruns, permitting issues)
+- Market changes since commitment (demand shifts, competitive supply, rent trends)
+- Leasing/occupancy challenges (if applicable)
+- Financial performance vs. projections (if operating)
+- Sponsor performance issues
+- Macroeconomic headwinds affecting this deal
+
+Use markdown bullet points with bold risk categories. Be specific about what's changed or what to monitor.
+
+## Action Items & Follow-Ups
+
+Generate 5-8 SPECIFIC action items and questions to track. Focus on:
+- Next milestones to monitor (completion dates, lease-up targets, etc.)
+- Updates needed from sponsor (quarterly reports, budget reconciliation, etc.)
+- Site visits or calls needed
+- Missing data that would help monitoring
+- Decisions needed from the investment committee
+- Market research to validate performance assumptions
+
+Use markdown bullet points starting with strong verbs (Monitor, Request, Schedule, Review, Track, etc.)
+
+CRITICAL REQUIREMENTS:
+1. Return ONLY the markdown content for these three sections - no introduction, no conclusion
+2. Start with ## Execution Status as the first line
+3. Be SPECIFIC and reference the actual deal data - avoid generic statements
+4. Use bullet points (- or *) for all items
+5. Use **bold** to highlight key phrases in each bullet
+6. Do NOT invent data - only use information provided above
+7. Total output should be 400-600 words
+8. Remember: this is a COMMITTED deal, so focus on monitoring execution, not evaluating the investment decision
+
+Generate the memo now:"""
+    else:
+        # Prompt for EARLY-STAGE deals - investment evaluation focus
+        prompt = f"""You are an investment analyst generating an investment memo for a commercial real estate deal. Analyze the following deal information and generate a comprehensive memo with three specific sections.
 
 DEAL INFORMATION:
 ---
