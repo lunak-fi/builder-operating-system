@@ -20,7 +20,7 @@ class AutoPopulationError(Exception):
 def populate_database_from_extraction(
     extracted_data: Dict[str, Any],
     document_id: UUID,
-    operator_id: UUID,
+    operator_ids: List[UUID],
     db: Session
 ) -> Dict[str, Any]:
     """
@@ -30,43 +30,63 @@ def populate_database_from_extraction(
     Args:
         extracted_data: Structured data from LLM extraction
         document_id: ID of source document
-        operator_id: ID of confirmed operator (required)
+        operator_ids: List of confirmed operator IDs (required, at least one)
         db: Database session
 
     Returns:
         Dictionary with IDs of created records:
         {
-            "operator_id": UUID,
+            "operator_ids": [UUID, ...],
             "deal_id": UUID,
             "principal_ids": [UUID, ...],
             "underwriting_id": UUID
         }
     """
     try:
+        # Validate at least one operator
+        if not operator_ids:
+            raise AutoPopulationError("At least one operator is required")
+
         result = {
-            "operator_id": operator_id,
+            "operator_ids": operator_ids,
             "deal_id": None,
             "principal_ids": [],
             "underwriting_id": None
         }
 
-        # 1. Use the confirmed operator_id (already validated by caller)
-        logger.info(f"Creating deal with confirmed operator {operator_id}")
+        # 1. Use the confirmed operator_ids (already validated by caller)
+        logger.info(f"Creating deal with {len(operator_ids)} confirmed operator(s)")
 
-        # 2. Create new deal with extracted data
+        # 2. Create new deal with extracted data (use first operator for FK)
         deal_data = extracted_data.get("deal", {})
-        deal = _create_deal(deal_data, operator_id, db)
+        deal = _create_deal(deal_data, operator_ids[0], db)
         result["deal_id"] = deal.id
         logger.info(f"Deal created: {deal.deal_name} ({deal.id})")
 
-        # 3. Create principals (only if we have an operator to link them to)
-        principals_data = extracted_data.get("principals", [])
-        if principals_data and operator_id:
-            principals = _create_principals(principals_data, operator_id, db)
-            result["principal_ids"] = [p.id for p in principals]
-            logger.info(f"Created {len(principals)} principal(s)")
+        # 3. Create junction table entries for all operators
+        from app.models.deal_operator import DealOperator
 
-        # 4. Create underwriting for the new deal
+        for idx, operator_id in enumerate(operator_ids):
+            deal_operator = DealOperator(
+                deal_id=deal.id,
+                operator_id=operator_id,
+                is_primary=(idx == 0)  # First is primary
+            )
+            db.add(deal_operator)
+        logger.info(f"Linked {len(operator_ids)} operator(s) to deal")
+
+        # 4. Create principals for ALL operators (not just first)
+        principals_data = extracted_data.get("principals", [])
+        all_principals = []
+        for operator_id in operator_ids:
+            if principals_data:
+                principals = _create_principals(principals_data, operator_id, db)
+                all_principals.extend(principals)
+        result["principal_ids"] = [p.id for p in all_principals]
+        if all_principals:
+            logger.info(f"Created {len(all_principals)} principal(s)")
+
+        # 5. Create underwriting for the new deal
         underwriting_data = extracted_data.get("underwriting", {})
         if underwriting_data:
             underwriting = _create_underwriting(underwriting_data, deal.id, db)

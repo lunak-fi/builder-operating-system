@@ -25,7 +25,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 class ConfirmExtractionRequest(BaseModel):
     """Request body for confirming extraction and creating deal"""
-    operator_id: UUID
+    operator_ids: List[UUID]
     extracted_data: dict
 
 # Mapping of file extensions to document types
@@ -333,41 +333,42 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
         extracted_data = extract_deal_data_from_text(document.parsed_text)
         logger.info(f"Deal LLM extraction completed for document {document_id}")
 
-        # Search for matching operators by extracted sponsor name
-        operator_matches = []
-        suggested_operator = None
-        operator_data = extracted_data.get("operator", {})
+        # Search for matching operators for EACH extracted sponsor
+        operator_matches_by_extracted = []
+        operators_data = extracted_data.get("operators", [])
 
-        if operator_data and operator_data.get("name"):
-            extracted_name = operator_data.get("name")
-            suggested_operator = {"name": extracted_name}
+        for operator_data in operators_data:
+            if operator_data and operator_data.get("name"):
+                extracted_name = operator_data.get("name")
+                search_term = f"%{extracted_name}%"
 
-            # Search for operators matching the extracted name
-            search_term = f"%{extracted_name}%"
-            matching_operators = db.query(Operator).filter(
-                (Operator.name.ilike(search_term)) |
-                (Operator.legal_name.ilike(search_term))
-            ).limit(10).all()
+                matching_operators = db.query(Operator).filter(
+                    (Operator.name.ilike(search_term)) |
+                    (Operator.legal_name.ilike(search_term))
+                ).limit(10).all()
 
-            operator_matches = [
-                {
-                    "id": str(op.id),
-                    "name": op.name,
-                    "legal_name": op.legal_name,
-                    "hq_city": op.hq_city,
-                    "hq_state": op.hq_state
-                }
-                for op in matching_operators
-            ]
+                operator_matches_by_extracted.append({
+                    "extracted_name": extracted_name,
+                    "is_primary": operator_data.get("is_primary", False),
+                    "matches": [
+                        {
+                            "id": str(op.id),
+                            "name": op.name,
+                            "legal_name": op.legal_name,
+                            "hq_city": op.hq_city,
+                            "hq_state": op.hq_state
+                        }
+                        for op in matching_operators
+                    ]
+                })
 
-            logger.info(f"Found {len(operator_matches)} matching operators for '{extracted_name}'")
+                logger.info(f"Found {len(matching_operators)} matching operators for '{extracted_name}'")
 
         return {
             "success": True,
             "document_id": str(document_id),
             "extracted_data": extracted_data,
-            "operator_matches": operator_matches,
-            "suggested_operator": suggested_operator
+            "operator_matches": operator_matches_by_extracted
         }
 
     except LLMExtractionError as e:
@@ -385,11 +386,11 @@ def confirm_extraction(
     db: Session = Depends(get_db)
 ):
     """
-    Confirm sponsor selection and create deal from extracted data.
+    Confirm sponsor selection(s) and create deal from extracted data.
 
     This endpoint:
-    1. Validates the selected operator exists
-    2. Creates deal records using the confirmed operator_id
+    1. Validates the selected operators exist
+    2. Creates deal records using the confirmed operator_ids
     3. Links the document to the newly created deal
 
     Returns the created deal data and record IDs.
@@ -399,19 +400,24 @@ def confirm_extraction(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Validate operator exists
+    # Validate at least one operator
+    if not request.operator_ids:
+        raise HTTPException(status_code=400, detail="At least one operator required")
+
+    # Validate all operators exist
     from app.models import Operator
-    operator = db.query(Operator).filter(Operator.id == request.operator_id).first()
-    if not operator:
-        raise HTTPException(status_code=404, detail="Selected operator not found")
+    for operator_id in request.operator_ids:
+        operator = db.query(Operator).filter(Operator.id == operator_id).first()
+        if not operator:
+            raise HTTPException(status_code=404, detail=f"Operator {operator_id} not found")
 
     try:
-        # Create deal with confirmed operator
-        logger.info(f"Creating deal for document {document_id} with operator {request.operator_id}")
+        # Create deal with confirmed operators
+        logger.info(f"Creating deal for document {document_id} with {len(request.operator_ids)} operator(s)")
         result = populate_database_from_extraction(
             extracted_data=request.extracted_data,
             document_id=document_id,
-            operator_id=request.operator_id,
+            operator_ids=request.operator_ids,
             db=db
         )
 

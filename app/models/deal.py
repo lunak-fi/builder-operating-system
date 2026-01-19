@@ -69,6 +69,9 @@ class Deal(Base):
 
     # Relationships
     operator: Mapped["Operator"] = relationship("Operator", back_populates="deals")
+    deal_operators: Mapped[list["DealOperator"]] = relationship(
+        "DealOperator", back_populates="deal", cascade="all, delete-orphan"
+    )
     documents: Mapped[list["DealDocument"]] = relationship(
         "DealDocument", back_populates="deal", cascade="all, delete-orphan"
     )
@@ -78,3 +81,17 @@ class Deal(Base):
     memos: Mapped[list["Memo"]] = relationship(
         "Memo", back_populates="deal", cascade="all, delete-orphan"
     )
+
+    # Helper properties for multiple operators
+    @property
+    def operators(self) -> list["Operator"]:
+        """Get all operators, primary first"""
+        return [do.operator for do in sorted(
+            self.deal_operators, key=lambda x: not x.is_primary
+        )]
+
+    @property
+    def primary_operator(self) -> "Operator | None":
+        """Get primary operator (for legacy code)"""
+        primary = next((do for do in self.deal_operators if do.is_primary), None)
+        return primary.operator if primary else None

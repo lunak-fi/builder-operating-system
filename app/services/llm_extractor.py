@@ -99,17 +99,20 @@ DOCUMENT TEXT:
 Please extract the following information and return it as valid JSON:
 
 {{
-  "operator": {{
-    "name": "Company/operator name (optional - use null if not clearly stated)",
-    "legal_name": "Legal entity name if different (optional)",
-    "website_url": "Website URL (optional)",
-    "hq_city": "Headquarters city (optional)",
-    "hq_state": "Headquarters state (optional)",
-    "hq_country": "Headquarters country (optional)",
-    "primary_geography_focus": "Primary geographic focus area (optional)",
-    "primary_asset_type_focus": "Primary asset type focus (optional)",
-    "description": "Brief description of the operator (optional)"
-  }},
+  "operators": [
+    {{
+      "name": "Sponsor/operator name (required)",
+      "legal_name": "Legal entity name if different (optional)",
+      "website_url": "Website URL (optional)",
+      "hq_city": "Headquarters city (optional)",
+      "hq_state": "Headquarters state (optional)",
+      "hq_country": "Headquarters country (optional)",
+      "primary_geography_focus": "Primary geographic focus area (optional)",
+      "primary_asset_type_focus": "Primary asset type focus (optional)",
+      "description": "Brief description of the operator (optional)",
+      "is_primary": "true if lead sponsor, false otherwise (boolean)"
+    }}
+  ],
   "deal": {{
     "deal_name": "Name of this specific deal/property (required)",
     "internal_code": "Any internal reference code (optional, generate one if not found)",
@@ -172,14 +175,18 @@ IMPORTANT INSTRUCTIONS:
 3. For IRR, interest_rate, cap rates, convert percentages to decimals (25.11% → 0.2511, 6.5% → 0.065)
 4. If a field is not found in the document, use null
 5. Extract ALL principals mentioned in the document (especially from contact pages)
-6. Be thorough - this is a critical data extraction task
-7. For deal_name, use the actual property/portfolio name, not generic terms
-8. For internal_code, if not explicitly stated, create one based on the deal name (e.g., "SPRINGDALE-001")
-9. Use the EXACT field names specified above - do not use synonyms or variations
-10. For land_cost, include purchase price, acquisition cost, acquisition price, or site cost
-11. For hard_cost, include construction costs, development costs, building costs, renovation costs, renovation budget, CapEx, capital improvements, or improvement costs
-12. For soft_cost, include fees, permits, architecture, engineering costs, closing costs, or transaction costs
-13. For total_project_cost, calculate the sum of land_cost + hard_cost + soft_cost if not explicitly stated
+6. Extract ALL sponsors/operators mentioned (array, not single object)
+7. If multiple sponsors mentioned (e.g., "XYZ Capital and ABC Partners"), create separate entries for each
+8. Mark the first/most prominent sponsor with is_primary: true
+9. For single-sponsor deals, create array with one operator with is_primary: true
+10. Be thorough - this is a critical data extraction task
+11. For deal_name, use the actual property/portfolio name, not generic terms
+12. For internal_code, if not explicitly stated, create one based on the deal name (e.g., "SPRINGDALE-001")
+13. Use the EXACT field names specified above - do not use synonyms or variations
+14. For land_cost, include purchase price, acquisition cost, acquisition price, or site cost
+15. For hard_cost, include construction costs, development costs, building costs, renovation costs, renovation budget, CapEx, capital improvements, or improvement costs
+16. For soft_cost, include fees, permits, architecture, engineering costs, closing costs, or transaction costs
+17. For total_project_cost, calculate the sum of land_cost + hard_cost + soft_cost if not explicitly stated
 
 Return only the JSON object, nothing else."""
 
@@ -209,7 +216,21 @@ def _parse_extraction_response(response_text: str) -> Dict[str, Any]:
         # Validate required fields
         if "deal" not in data or "deal_name" not in data["deal"]:
             raise LLMExtractionError("Missing required field: deal.deal_name")
-        # Note: operator.name is now optional - will use "Unknown Operator" if missing
+
+        # Handle backward compatibility: singular operator → operators array
+        if "operator" in data and "operators" not in data:
+            data["operators"] = [data["operator"]] if data["operator"] else []
+            del data["operator"]
+        elif "operators" not in data:
+            data["operators"] = []
+
+        # Ensure at least one primary if multiple sponsors
+        if len(data["operators"]) > 1:
+            has_primary = any(op.get("is_primary", False) for op in data["operators"])
+            if not has_primary:
+                data["operators"][0]["is_primary"] = True
+        elif len(data["operators"]) == 1:
+            data["operators"][0]["is_primary"] = True
 
         # Normalize underwriting fields to handle any variations
         if "underwriting" in data:
