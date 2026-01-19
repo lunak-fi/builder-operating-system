@@ -319,7 +319,151 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
      - Add UI to manually add/remove sponsors from deals
    - **Priority:** High - Important for accurate sponsor tracking and relationship management
 
-2. **Configurable Metrics Dashboard**
+2. **Conversation Transcripts for Deals**
+   - **Problem:** Need to upload and track conversation transcripts (sponsor calls, IC meetings, site visits) for each deal
+   - **Use case:** After calls with sponsors, investors want to upload transcripts, review discussions, track commitments, and reference conversations when making decisions
+   - **Format:** .txt files initially, stored as `DealDocument` with `document_type = "transcript"`
+   - **Metadata:** Date/Time, Topic/Subject, Participants, Duration, Key Action Items
+   - **AI Analysis:** Auto-extract key decisions, action items, risks from transcripts and include in memo generation
+
+   ### Design Approach (from enterprise-product-designer)
+
+   **Visual Differentiation:**
+   - Conversation bubble icon (💬) instead of document icon
+   - Teal/blue-green left border accent on cards
+   - Show insight badge: "3 action items • 2 risks identified"
+
+   **Viewing Pattern:**
+   - **Slide-over panel from right** (60% width, overlays Master Memo)
+   - Activity Feed compresses to ~35% but stays visible for context
+   - Collapsible AI insights section at top of panel
+   - In-transcript highlighting when clicking insights
+   - Keyboard navigation (↑/↓ or J/K between transcripts, Escape to close)
+
+   **Activity Feed Card Layout:**
+   ```
+   ┌─────────────────────────────────────────────────────────┐
+   │ ┌──┐                                                    │
+   │ │💬│  Sponsor Call - Q3 Projections Review              │
+   │ └──┘  with John Smith, Sarah Chen                       │
+   │       Jan 15, 2026 • 2:34 PM • 45 min                   │
+   │       ┌─────────────────────────────────────────────┐   │
+   │       │ 3 action items • 2 risks identified         │   │
+   │       └─────────────────────────────────────────────┘   │
+   │       [View Transcript]                                 │
+   └─────────────────────────────────────────────────────────┘
+   ```
+
+   **Master Memo Integration:**
+   - **New "Key Conversations" section:** 2-3 sentence summaries of significant conversations
+   - **New "Open Items" section:** Aggregated action items from all transcripts (becomes single source of truth)
+   - **Source attribution:** Risks/Questions get tags like `[From: Sponsor Call - Jan 15]` linking back to source
+   - **Cross-referencing:** Click source tag to open relevant transcript in slide-over panel
+
+   **AI Insights Panel Structure:**
+   ```
+   ┌─────────────────────────────────────────────────────────┐
+   │ INSIGHTS                                          [−]   │
+   ├─────────────────────────────────────────────────────────┤
+   │ KEY DECISIONS                                           │
+   │ • Agreed to proceed with Phase 1 due diligence          │
+   │ • Cap rate assumption revised to 5.75%                  │
+   │                                                         │
+   │ ACTION ITEMS                                            │
+   │ ☐ Request updated rent roll from sponsor (John)         │
+   │ ☐ Schedule site visit for week of Jan 20 (Sarah)        │
+   │                                                         │
+   │ RISKS MENTIONED                                         │
+   │ ⚠ Tenant concentration: Anchor tenant is 45% of NOI     │
+   │ ⚠ Sponsor mentioned potential zoning changes            │
+   └─────────────────────────────────────────────────────────┘
+   ```
+
+   **Search & Filter:**
+   - Filter bar above Activity Feed: Type (All/Transcripts/Documents) | Date | Has Insights
+   - Feed-level search: titles, topics, participant names
+   - Content search: Cmd+F within open transcript
+
+   ### Implementation Phases
+
+   **Phase 1 (MVP):**
+   - [ ] Backend: Add transcript metadata fields to DealDocument model
+   - [ ] Backend: Create transcript upload endpoint with AI extraction
+   - [ ] Backend: AI service to extract action items, decisions, risks from transcript text
+   - [ ] Frontend: Transcript card component in Activity Feed with distinct styling
+   - [ ] Frontend: Slide-over panel component for transcript viewer
+   - [ ] Frontend: Basic AI insights display in panel
+   - [ ] Frontend: New "Open Items" section in Master Memo
+   - [ ] Frontend: Upload dialog with transcript-specific fields (topic, participants, date/time)
+
+   **Phase 2 (Enhanced Integration):**
+   - [ ] Frontend: "Key Conversations" summary section in Master Memo
+   - [ ] Frontend: Source attribution tags on risks/questions linking to transcripts
+   - [ ] Frontend: In-transcript highlighting when clicking insights
+   - [ ] Frontend: Filter bar for Activity Feed (type, date, has insights)
+   - [ ] Backend: Regenerate memo to include transcript insights
+
+   **Phase 3 (Advanced Features):**
+   - [ ] Frontend: Cross-transcript search functionality
+   - [ ] Frontend: Action item assignment and tracking (assignee, due date, status)
+   - [ ] Frontend: Participant management and tagging
+   - [ ] Backend: Export and reporting for transcripts and action items
+   - [ ] Frontend: Bulk operations for action items
+
+   ### Database Schema
+
+   **Extend DealDocument:**
+   ```python
+   # New fields for document_type = "transcript"
+   transcript_topic: str | None  # "Sponsor Call - Q3 Projections"
+   transcript_date: datetime | None  # Actual conversation date/time
+   transcript_duration_minutes: int | None  # 45
+   transcript_participants: str | None  # JSON array: ["John Smith", "Sarah Chen"]
+   ```
+
+   **New Model: TranscriptInsight (for AI extractions):**
+   ```python
+   class TranscriptInsight:
+       id: UUID
+       document_id: UUID  # FK to DealDocument
+       insight_type: str  # "action_item", "decision", "risk"
+       content: str  # The extracted insight text
+       source_passage: str  # Original text snippet from transcript
+       source_line_start: int  # For highlighting
+       source_line_end: int
+       assignee: str | None  # For action items
+       is_resolved: bool  # For action items
+       created_at: datetime
+   ```
+
+   ### UX Best Practices Applied
+
+   - **Audit Trail:** Every AI-extracted insight links to source passage in transcript
+   - **Progressive Disclosure:** Card shows summary → Panel shows details → Click for source
+   - **Power User Efficiency:** Keyboard navigation, persistent filters, click-to-source
+   - **Data Integrity:** Transcripts immutable once uploaded, AI insights manually correctable
+   - **Context Preservation:** Slide-over keeps deal visible, doesn't navigate away
+
+   ### Pitfalls to Avoid
+
+   - ⚠️ **AI extraction errors:** Always show source passage, allow manual correction
+   - ⚠️ **Information overload:** Use progressive disclosure, don't show all insights on card
+   - ⚠️ **Lost context:** Slide-over keeps deal visible, don't use modal or navigate away
+   - ⚠️ **Duplicate action items:** AI should deduplicate similar items across transcripts
+   - ⚠️ **Stale action items:** Add "Mark as resolved" with timestamp
+   - ⚠️ **Transcript sprawl:** Key Conversations section keeps high-level view
+
+   - **Priority:** Medium-High - Valuable for deal tracking and decision documentation
+
+3. **Stage-Aware Memo Generation**
+   - **Problem:** Memos don't adapt content based on deal stage (new vs. committed deals need different risks/questions)
+   - **Enhancement:** Modify AI prompt based on deal status
+     - **New deals** (Received/Screening): Focus on investment decision risks, sponsor verification, due diligence questions
+     - **Committed deals** (Invested/Portfolio): Focus on portfolio monitoring, operational performance, exit strategy
+   - **Implementation:** Update `_build_memo_prompt()` in memo_generator.py to include deal status context
+   - **Priority:** Medium - Improves memo relevance and usefulness
+
+4. **Configurable Metrics Dashboard**
    - User selects which metrics to display
    - Pin/unpin metrics
    - Metric history timeline view
