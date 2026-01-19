@@ -122,6 +122,11 @@ def process_transcript_ai_extraction(document_id: UUID, db_session_maker):
             metadata["ai_insights"] = insights
 
             document.metadata_json = metadata
+
+            # Force SQLAlchemy to detect the JSONB field change
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(document, "metadata_json")
+
             db.commit()
 
             logger.info(f"Successfully extracted insights for transcript {document_id}")
@@ -134,6 +139,11 @@ def process_transcript_ai_extraction(document_id: UUID, db_session_maker):
                 "extracted_at": datetime.utcnow().isoformat()
             }
             document.metadata_json = metadata
+
+            # Force SQLAlchemy to detect the JSONB field change
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(document, "metadata_json")
+
             db.commit()
 
     finally:
@@ -285,6 +295,11 @@ async def upload_deal_document(
             transcript_metadata["conversation_date"] = conversation_date
 
         db_document.metadata_json = {"transcript": transcript_metadata}
+
+        # Force SQLAlchemy to detect the JSONB field change
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(db_document, "metadata_json")
+
         db.commit()
         logger.info(f"Stored transcript metadata for document {db_document.id}")
 
@@ -652,6 +667,11 @@ async def update_transcript_metadata(
 
     metadata["transcript"] = transcript_metadata
     document.metadata_json = metadata
+
+    # Force SQLAlchemy to detect the JSONB field change
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(document, "metadata_json")
+
     db.commit()
     db.refresh(document)
 
