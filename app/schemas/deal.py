@@ -1,7 +1,11 @@
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.schemas.operator import OperatorResponse
 
 
 class DealBase(BaseModel):
@@ -54,5 +58,11 @@ class DealResponse(DealBase):
     id: UUID
     created_at: datetime
     updated_at: datetime
+    operators: list["OperatorResponse"] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Resolve forward references
+from app.schemas.operator import OperatorResponse
+DealResponse.model_rebuild()
