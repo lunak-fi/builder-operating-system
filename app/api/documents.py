@@ -61,6 +61,11 @@ def process_document_parsing(document_id: UUID, file_path: str, document_type: s
             document.parsing_error = None
             db.commit()
             logger.info(f"Successfully parsed document {document_id}: {len(extracted_text)} characters")
+
+            # If transcript, trigger AI extraction
+            if document_type == "transcript":
+                logger.info(f"Triggering AI extraction for transcript {document_id}")
+                process_transcript_ai_extraction(document_id, db_session_maker)
         else:
             logger.error(f"Document {document_id} not found in database")
 
@@ -80,6 +85,57 @@ def process_document_parsing(document_id: UUID, file_path: str, document_type: s
             document.parsing_status = "failed"
             document.parsing_error = f"Unexpected error: {str(e)}"
             db.commit()
+    finally:
+        db.close()
+
+
+def process_transcript_ai_extraction(document_id: UUID, db_session_maker):
+    """
+    Background task: Extract AI insights from transcript.
+    Called after document parsing completes for transcript documents.
+    """
+    db = db_session_maker()
+    try:
+        document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+
+        if not document or document.document_type != "transcript":
+            return
+
+        if document.parsing_status != "completed" or not document.parsed_text:
+            logger.warning(f"Cannot extract insights - parsing not complete for {document_id}")
+            return
+
+        # Extract metadata
+        metadata = document.metadata_json or {}
+        transcript_metadata = metadata.get("transcript", {})
+
+        # Call transcript extractor
+        from app.services.transcript_extractor import extract_transcript_insights, TranscriptExtractionError
+        from datetime import datetime
+
+        try:
+            insights = extract_transcript_insights(document.parsed_text, transcript_metadata)
+
+            # Store insights in metadata_json
+            if "ai_insights" not in metadata:
+                metadata["ai_insights"] = {}
+            metadata["ai_insights"] = insights
+
+            document.metadata_json = metadata
+            db.commit()
+
+            logger.info(f"Successfully extracted insights for transcript {document_id}")
+
+        except TranscriptExtractionError as e:
+            logger.error(f"Transcript extraction failed for {document_id}: {str(e)}")
+            # Store error in metadata
+            metadata["ai_insights"] = {
+                "error": str(e),
+                "extracted_at": datetime.utcnow().isoformat()
+            }
+            document.metadata_json = metadata
+            db.commit()
+
     finally:
         db.close()
 
@@ -162,6 +218,8 @@ async def upload_deal_document(
     deal_id: UUID,
     file: UploadFile = File(...),
     document_type: str = "pitch_deck",
+    topic: str | None = None,
+    conversation_date: str | None = None,
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
@@ -169,6 +227,10 @@ async def upload_deal_document(
     Upload a document for an existing deal.
     Supports: PDF, Excel (.xlsx, .xls), Text (.txt, .md), Email (.eml)
     WARNING: Running extraction on PDFs will overwrite existing deal data.
+
+    For transcripts, optionally provide:
+    - topic: Conversation topic (e.g., "Sponsor Call - Q3 Review")
+    - conversation_date: ISO 8601 date string (e.g., "2026-01-15T14:30:00Z")
     """
     # Get file extension
     file_extension = Path(file.filename).suffix.lower()
@@ -213,6 +275,18 @@ async def upload_deal_document(
     db.add(db_document)
     db.commit()
     db.refresh(db_document)
+
+    # Store transcript metadata if provided
+    if detected_type == "transcript" and (topic or conversation_date):
+        transcript_metadata = {}
+        if topic:
+            transcript_metadata["topic"] = topic
+        if conversation_date:
+            transcript_metadata["conversation_date"] = conversation_date
+
+        db_document.metadata_json = {"transcript": transcript_metadata}
+        db.commit()
+        logger.info(f"Stored transcript metadata for document {db_document.id}")
 
     # Trigger background document parsing
     from app.db.database import SessionLocal
@@ -548,6 +622,77 @@ async def upload_document_version(
     logger.info(f"Uploaded version {new_version_number} of document {original_doc_id}")
 
     return db_document
+
+
+@router.patch("/{document_id}/transcript-metadata", response_model=DealDocumentResponse)
+async def update_transcript_metadata(
+    document_id: UUID,
+    topic: str | None = None,
+    conversation_date: str | None = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Update transcript metadata (topic and/or conversation date).
+    """
+    document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if document.document_type != "transcript":
+        raise HTTPException(status_code=400, detail="Document is not a transcript")
+
+    # Update metadata
+    metadata = document.metadata_json or {}
+    transcript_metadata = metadata.get("transcript", {})
+
+    if topic:
+        transcript_metadata["topic"] = topic
+    if conversation_date:
+        transcript_metadata["conversation_date"] = conversation_date
+
+    metadata["transcript"] = transcript_metadata
+    document.metadata_json = metadata
+    db.commit()
+    db.refresh(document)
+
+    logger.info(f"Updated transcript metadata for document {document_id}")
+
+    return document
+
+
+@router.post("/{document_id}/regenerate-insights")
+async def regenerate_transcript_insights(
+    document_id: UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually trigger AI insight regeneration for a transcript.
+    """
+    document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if document.document_type != "transcript":
+        raise HTTPException(status_code=400, detail="Document is not a transcript")
+
+    if document.parsing_status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Document parsing not complete: {document.parsing_status}"
+        )
+
+    # Trigger background extraction
+    from app.db.database import SessionLocal
+    background_tasks.add_task(
+        process_transcript_ai_extraction,
+        document_id,
+        SessionLocal
+    )
+
+    logger.info(f"Triggered insights regeneration for transcript {document_id}")
+
+    return {"success": True, "message": "Insights regeneration triggered"}
 
 
 @router.delete("/{document_id}", status_code=204)
