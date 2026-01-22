@@ -29,3 +29,6 @@ uploads/
 
 # Tests
 test_*.py
+
+# Node.js
+node_modules/

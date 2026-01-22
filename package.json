@@ -1,0 +1,12 @@
+{
+  "name": "builder-operating-system",
+  "version": "1.0.0",
+  "description": "Builder OS - Python backend with Node.js tooling for task sync",
+  "private": true,
+  "scripts": {
+    "sync-tasks": "tsx scripts/sync-kanban.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0"
+  }
+}
