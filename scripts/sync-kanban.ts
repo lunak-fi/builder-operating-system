@@ -44,6 +44,13 @@ function parsePhases(todoContent: string): Phase[] {
       continue;
     }
 
+    // Special handling for "Future Enhancements" - parse numbered sub-items
+    if (sectionName === 'Future Enhancements') {
+      const subPhases = parseFutureEnhancements(rawSection);
+      phases.push(...subPhases);
+      continue;
+    }
+
     // Extract description (first paragraph after header)
     const description = extractDescription(rawSection);
 
@@ -62,6 +69,47 @@ function parsePhases(todoContent: string): Phase[] {
       tasksTotal,
       tasksComplete,
       rawSection
+    });
+  }
+
+  return phases;
+}
+
+/**
+ * Parse numbered sub-items from "Future Enhancements" section
+ */
+function parseFutureEnhancements(rawSection: string): Phase[] {
+  const phases: Phase[] = [];
+
+  // Match numbered items like "1. **Title**" or "5. **Title**"
+  const itemRegex = /^\d+\.\s+\*\*(.+?)\*\*/gm;
+  const matches = [...rawSection.matchAll(itemRegex)];
+
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i];
+    const itemName = match[1].trim();
+    const startIdx = match.index!;
+    const endIdx = i < matches.length - 1 ? matches[i + 1].index! : rawSection.length;
+    const itemSection = rawSection.slice(startIdx, endIdx);
+
+    // Extract description
+    const description = extractDescription(itemSection);
+
+    // Count tasks
+    const taskCheckboxes = itemSection.match(/- \[(x| )\]/g) || [];
+    const tasksTotal = taskCheckboxes.length;
+    const tasksComplete = taskCheckboxes.filter(cb => cb.includes('[x]')).length;
+
+    // Determine status
+    const status = categorizePhase(itemSection, itemName, tasksTotal, tasksComplete);
+
+    phases.push({
+      name: itemName,
+      description,
+      status,
+      tasksTotal,
+      tasksComplete,
+      rawSection: itemSection
     });
   }
 
@@ -91,34 +139,107 @@ function shouldSkipSection(sectionName: string): boolean {
  * Extract brief description from section
  */
 function extractDescription(rawSection: string): string {
-  // Look for **Goal:** or first paragraph after header
-  const goalMatch = rawSection.match(/\*\*Goal:\*\*\s*(.+?)(?:\n\n|$)/s);
+  const MAX_LENGTH = 120;
+
+  // Look for **Goal:** pattern - stop at next section marker
+  const goalMatch = rawSection.match(/\*\*Goal:\*\*\s*(.+?)(?=\n\n|\n\s*[-*]|\*\*[A-Z]|$)/s);
   if (goalMatch) {
-    return goalMatch[1].trim().replace(/\n/g, ' ');
+    return truncateDescription(goalMatch[1].trim().replace(/\n/g, ' '), MAX_LENGTH);
   }
 
-  // Look for **Problem:** pattern
-  const problemMatch = rawSection.match(/\*\*Problem:\*\*\s*(.+?)(?:\n\n|$)/s);
+  // Look for **Problem:** pattern - stop at next section marker
+  const problemMatch = rawSection.match(/\*\*Problem:\*\*\s*(.+?)(?=\n\s*[-*]|\*\*[A-Z]|\n\n|$)/s);
   if (problemMatch) {
-    return problemMatch[1].trim().replace(/\n/g, ' ');
+    return truncateDescription(problemMatch[1].trim().replace(/\n/g, ' '), MAX_LENGTH);
   }
 
-  // Look for **Implementation complete:** pattern
-  const implMatch = rawSection.match(/\*\*Implementation complete:\*\*\s*(.+?)(?:\n\n|$)/s);
+  // Look for **Note:** pattern
+  const noteMatch = rawSection.match(/\*\*Note:\*\*\s*(.+?)(?=\n\s*[-*]|\*\*[A-Z]|\n\n|$)/s);
+  if (noteMatch) {
+    return truncateDescription(noteMatch[1].trim().replace(/\n/g, ' '), MAX_LENGTH);
+  }
+
+  // Look for **Implementation complete:** pattern - take first bullet point
+  const implMatch = rawSection.match(/\*\*Implementation complete:\*\*\s*\n\s*-\s*(.+?)(?=\n|$)/);
   if (implMatch) {
-    return implMatch[1].trim().replace(/\n/g, ' ').split('\n')[0];
+    return truncateDescription(implMatch[1].trim(), MAX_LENGTH);
   }
 
-  // Fall back to first paragraph
-  const lines = rawSection.split('\n').slice(1); // Skip header line
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed && !trimmed.startsWith('**') && !trimmed.startsWith('-') && !trimmed.startsWith('#')) {
-      return trimmed;
+  // Look for **What works:** pattern
+  const worksMatch = rawSection.match(/\*\*What works:\*\*\s*\n\s*-\s*(.+?)(?=\n|$)/);
+  if (worksMatch) {
+    return truncateDescription(worksMatch[1].trim(), MAX_LENGTH);
+  }
+
+  // Extract first 2-3 bullet points and concatenate
+  const bulletMatches = rawSection.match(/^\s*-\s*(.+?)$/gm);
+  if (bulletMatches && bulletMatches.length > 0) {
+    const bullets = bulletMatches
+      .slice(0, 3)
+      .map(b => {
+        // Remove leading dash, checkbox, and emoji markers
+        let cleaned = b.replace(/^\s*-\s*/, '')
+                       .replace(/\s*\[.\]\s*/, '')
+                       .replace(/^✅\s*/, '')
+                       .replace(/^⚠️\s*/, '')
+                       .replace(/^\*\*COMPLETE\*\*\s*-?\s*/, '')
+                       .trim();
+        return cleaned;
+      })
+      .filter(b => b.length > 10 && !b.startsWith('**Backend') && !b.startsWith('**Frontend') && !b.startsWith('**Tested'));
+
+    if (bullets.length > 0) {
+      const combined = bullets.join('; ');
+      return truncateDescription(combined, MAX_LENGTH);
     }
   }
 
-  return 'No description available';
+  // Fall back to first meaningful paragraph
+  const lines = rawSection.split('\n').slice(1); // Skip header line
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip empty lines, headers, and markers
+    if (trimmed &&
+        !trimmed.startsWith('**') &&
+        !trimmed.startsWith('-') &&
+        !trimmed.startsWith('#') &&
+        !trimmed.startsWith('✅') &&
+        trimmed.length > 20) {
+      return truncateDescription(trimmed, MAX_LENGTH);
+    }
+  }
+
+  return 'Planned feature';
+}
+
+/**
+ * Truncate description to max length with ellipsis
+ */
+function truncateDescription(text: string, maxLength: number): string {
+  // Clean up extra whitespace
+  text = text.replace(/\s+/g, ' ').trim();
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  // Try to break at sentence end
+  const truncated = text.substring(0, maxLength);
+  const lastPeriod = truncated.lastIndexOf('.');
+  const lastComma = truncated.lastIndexOf(',');
+
+  if (lastPeriod > maxLength * 0.6) {
+    return text.substring(0, lastPeriod + 1);
+  } else if (lastComma > maxLength * 0.7) {
+    return text.substring(0, lastComma) + '...';
+  } else {
+    // Break at last space
+    const lastSpace = truncated.lastIndexOf(' ');
+    if (lastSpace > maxLength * 0.6) {
+      return text.substring(0, lastSpace) + '...';
+    }
+    return truncated + '...';
+  }
 }
 
 /**
@@ -248,7 +369,14 @@ function generateKanbanMarkdown(phases: Phase[]): string {
         lines.push(`  - Status: ${percentage}% complete`);
         lines.push(`  - Tasks: ${phase.tasksComplete}/${phase.tasksTotal} completed`);
       } else {
-        lines.push(`  - Status: Not started`);
+        // No tasks defined - show status based on phase status
+        if (phase.status === 'complete') {
+          lines.push(`  - Status: Complete ✅`);
+        } else if (phase.status === 'planned') {
+          lines.push(`  - Status: Planned`);
+        } else {
+          lines.push(`  - Status: Not started`);
+        }
       }
 
       lines.push('');
