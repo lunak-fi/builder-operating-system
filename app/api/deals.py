@@ -249,3 +249,57 @@ def update_deal_operator(
     db.commit()
     db.refresh(deal_operator)
     return deal_operator
+
+
+@router.post("/{deal_id}/geocode")
+def geocode_deal(deal_id: UUID, db: Session = Depends(get_db)):
+    """Manually trigger geocoding for a deal"""
+    from app.services.geocoding import MSAGeocoder
+    from datetime import datetime
+
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    try:
+        geocoder = MSAGeocoder()
+        result = geocoder.standardize_market(
+            deal.address_line1 or "",
+            "",
+            deal.state or "",
+            deal.postal_code or ""
+        )
+
+        if result["geocoded"]:
+            deal.msa = result["msa"]
+            deal.latitude = result["latitude"]
+            deal.longitude = result["longitude"]
+            deal.geocoded_at = datetime.utcnow()
+            deal.msa_source = "manual_geocode"
+            db.commit()
+
+            return {
+                "success": True,
+                "msa": result["msa"],
+                "latitude": result["latitude"],
+                "longitude": result["longitude"]
+            }
+        else:
+            return {"success": False, "error": "Geocoding failed"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Geocoding error: {str(e)}")
+
+
+@router.put("/{deal_id}/market")
+def update_market(deal_id: UUID, msa: str, db: Session = Depends(get_db)):
+    """Manually override MSA for a deal"""
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    deal.msa = msa
+    deal.msa_source = "manual_override"
+    db.commit()
+
+    return {"success": True, "msa": msa}

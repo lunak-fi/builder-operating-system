@@ -157,6 +157,41 @@ def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> D
     if building_sf is not None:
         deal_fields["building_sf"] = Decimal(str(building_sf))
 
+    # Geocode and standardize MSA
+    try:
+        from app.services.geocoding import MSAGeocoder
+        from datetime import datetime
+
+        geocoder = MSAGeocoder()
+
+        # Extract address components
+        address = deal_data.get("address_line1", "")
+        city = ""  # Could extract from address if needed
+        state = deal_data.get("state", "")
+        zipcode = deal_data.get("postal_code", "")
+
+        # Attempt geocoding if we have address data
+        if address or (city and state):
+            geo_result = geocoder.standardize_market(address, city, state, zipcode)
+
+            if geo_result["geocoded"]:
+                # Use standardized MSA from Census data
+                deal_fields["msa"] = geo_result["msa"]
+                deal_fields["latitude"] = geo_result["latitude"]
+                deal_fields["longitude"] = geo_result["longitude"]
+                deal_fields["geocoded_at"] = datetime.utcnow()
+                deal_fields["msa_source"] = "census_geocoder"
+                logger.info(f"Geocoded address to MSA: {geo_result['msa']}")
+            else:
+                # Fallback: Use LLM-extracted MSA
+                deal_fields["msa_source"] = "llm_extraction"
+                logger.warning("Geocoding failed, using LLM-extracted MSA")
+
+    except Exception as e:
+        # Geocoding error - use LLM extraction as fallback
+        logger.error(f"Geocoding error: {e}")
+        deal_fields["msa_source"] = "llm_extraction"
+
     # Create the deal
     deal = Deal(**deal_fields)
     db.add(deal)

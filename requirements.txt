@@ -14,3 +14,8 @@ python-multipart==0.0.9
 weasyprint==60.2
 openpyxl==3.1.2
 chardet==5.2.0
+pyproj==3.5.0
+geopandas==0.13.2
+shapely==2.0.2
+requests==2.31.0
+fiona==1.9.5

@@ -30,5 +30,8 @@ uploads/
 # Tests
 test_*.py
 
+# Geocoding data (download via script)
+app/data/msa_boundaries/
+
 # Node.js
 node_modules/
