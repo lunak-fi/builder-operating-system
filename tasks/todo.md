@@ -357,15 +357,23 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
 **Phase 3 - Advanced Features:**
 
 3. **Multiple Sponsors Per Deal**
+   - ✅ **COMPLETE** - Implemented and tested
    - **Problem:** Some deals have 2+ sponsors (e.g., The Ark has Aptitude Development + The Alley Family Office; 2910 North Arthur Ashe has AIP + PointsFive)
-   - **Current limitation:** Database has single `operator_id` foreign key on deals table
-   - **Required changes:**
-     - Create `deal_operators` junction table (many-to-many relationship)
-     - Update LLM extraction to capture multiple sponsors from documents
-     - Modify auto-populate logic to create/link multiple operators
-     - Update frontend to display multiple sponsors (DealIdentityBar, sponsor cards)
-     - Add UI to manually add/remove sponsors from deals
-   - **Priority:** High - Important for accurate sponsor tracking and relationship management
+   - **Implementation complete:**
+     - ✅ Created `deal_operators` junction table (many-to-many relationship)
+     - ✅ Updated LLM extraction to capture multiple sponsors from documents
+     - ✅ Modified auto-populate logic to create/link multiple operators
+     - ✅ Updated frontend to display multiple sponsors (DealIdentityBar, sponsor cards)
+     - ✅ **NEW:** Added API endpoints to manually add/remove/update sponsors on deals
+   - **API Endpoints (2026-01-22):**
+     - `POST /api/deals/{deal_id}/operators` - Add sponsor to deal
+     - `DELETE /api/deals/{deal_id}/operators/{operator_id}` - Remove sponsor from deal
+     - `PUT /api/deals/{deal_id}/operators/{operator_id}` - Update primary sponsor status
+   - **Features:**
+     - Automatic primary sponsor management (only one primary at a time)
+     - Duplicate prevention (can't add same sponsor twice)
+     - Business validation (must keep at least one sponsor per deal)
+   - **Commit:** af505f5 - "Complete Multiple Sponsors feature - add sponsor management API endpoints"
 
 4. **Advanced Transcript Features**
    - **Problem:** Need to upload and track conversation transcripts (sponsor calls, IC meetings, site visits) for each deal
