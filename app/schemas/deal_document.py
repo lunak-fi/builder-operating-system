@@ -26,6 +26,7 @@ class DealDocumentBase(BaseModel):
     metadata_json: dict | None = None
     parent_document_id: UUID | None = None
     version_number: int = 1
+    document_date: datetime | None = None
 
 
 class DealDocumentCreate(DealDocumentBase):
@@ -45,6 +46,7 @@ class DealDocumentUpdate(BaseModel):
     metadata_json: dict | None = None
     parent_document_id: UUID | None = None
     version_number: int | None = None
+    document_date: datetime | None = None
 
 
 class DealDocumentResponse(DealDocumentBase):

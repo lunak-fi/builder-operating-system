@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
@@ -232,10 +232,10 @@ async def upload_document(
 async def upload_deal_document(
     deal_id: UUID,
     file: UploadFile = File(...),
-    document_type: str = "pitch_deck",
-    topic: str | None = None,
-    conversation_date: str | None = None,
-    document_date: str | None = None,
+    document_type: str = Form("pitch_deck"),
+    topic: str | None = Form(None),
+    conversation_date: str | None = Form(None),
+    document_date: str | None = Form(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
