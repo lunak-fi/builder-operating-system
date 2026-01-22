@@ -352,21 +352,42 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
    - **Frontend commit:** 57e2625
    - **Tested on:** Frog Alley deal with conversation transcript
 
-2. **Document Chronology Fix**
+2. **Document Chronology Fix + Date Picker UI**
    - ✅ **COMPLETE** - Implemented and tested (2026-01-22)
    - **Problem Fixed:** Documents now ordered by event date (`document_date`), not upload time
    - **What works:**
      - Documents ordered by event date with upload time as tiebreaker
      - Transcripts automatically use `conversation_date` as document date
-     - Manual date setting via API parameter (frontend UI optional)
+     - ✅ **NEW:** Date picker UI in both upload dialogs (DealUpload and DealTimeline)
+     - ✅ **NEW:** Optional date field with helpful hint text
      - All 39 existing documents backfilled with `created_at`
+   - **UX Flow:**
+     - DealUpload: Shows date dialog after file selection, before extraction starts
+     - DealTimeline: Upload modal with file picker and date selector
+     - Date is optional - defaults to upload time if not provided
    - **Test results:** ✅ PASS - Uploaded Dec 15 report, then Dec 1 report → system correctly uses Dec 15
-   - **Commits:** 3a03125, 5e6c7bf, 9d055cf
-   - **Optional enhancements (not critical):**
+   - **Commits:** 3a03125, 5e6c7bf, 9d055cf, a95d1cc, 4e6419f
+   - **Optional enhancement (not critical):**
      - Email date auto-detection from headers
-     - Frontend date picker UI in upload dialog
 
-3. **Enhanced Transcript Features**
+3. **Document Deletion**
+   - ✅ **COMPLETE** - Implemented and tested (2026-01-22)
+   - **Problem Fixed:** No way to remove incorrectly uploaded documents from deals
+   - **What works:**
+     - Delete button (red trash icon) on all document cards
+     - Delete button on transcript cards
+     - Confirmation dialog before deletion ("Are you sure?")
+     - Loading spinner during deletion
+     - Works for all document types (PDFs, Excel, transcripts, emails)
+   - **Backend:** DELETE /api/documents/{id} endpoint (already existed)
+   - **Frontend:**
+     - documentsAPI.delete() method
+     - Delete handlers in DealTimeline
+     - Event bubbling prevented on transcript cards
+   - **Test results:** ✅ PASS - Successfully deleted test documents and transcripts
+   - **Commits:** 4e6419f, 74e35b1
+
+4. **Enhanced Transcript Features**
    - **Priority:** Medium
    - [ ] Filter bar for Activity Feed (type, date, has insights)
    - [ ] Upload dialog with transcript-specific fields (topic, participants, date/time)
@@ -375,7 +396,7 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
 
 **Phase 3 - Advanced Features:**
 
-4. **Multiple Sponsors Per Deal**
+5. **Multiple Sponsors Per Deal**
    - ✅ **COMPLETE** - Implemented and tested
    - **Problem:** Some deals have 2+ sponsors (e.g., The Ark has Aptitude Development + The Alley Family Office; 2910 North Arthur Ashe has AIP + PointsFive)
    - **Implementation complete:**
@@ -394,40 +415,40 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
      - Business validation (must keep at least one sponsor per deal)
    - **Commit:** af505f5 - "Complete Multiple Sponsors feature - add sponsor management API endpoints"
 
-5. **Advanced Transcript Features**
+6. **Advanced Transcript Features**
    - **Problem:** Need to upload and track conversation transcripts (sponsor calls, IC meetings, site visits) for each deal
    - [ ] Cross-transcript search functionality
    - [ ] Action item assignment and tracking (assignee, due date, status)
    - [ ] Export and reporting for transcripts and action items
    - [ ] Bulk operations for action items
 
-6. **Stage-Aware Memo Generation**
+7. **Stage-Aware Memo Generation**
    - ✅ **COMPLETE** - Already implemented!
    - **Note:** This feature is listed as future work but is already working in production. The memo_generator.py has different prompts for early-stage deals (Investment Thesis, Key Risks, Open Questions) vs committed deals (Execution Status, Current Risks & Concerns, Action Items & Follow-Ups)
    - **Commits:** 84f0f62, 7e3fc20
    - Should be moved to completed features section
 
-7. **Configurable Metrics Dashboard**
+8. **Configurable Metrics Dashboard**
    - User selects which metrics to display
    - Pin/unpin metrics
    - Metric history timeline view
 
-8. **Collaborative Memo Editing**
+9. **Collaborative Memo Editing**
    - Rich text editor for memo sections
    - Track changes / version history
    - Comments on specific sections
 
-9. **Smart Metric Updates**
+10. **Smart Metric Updates**
    - Detect metric changes when document uploaded
    - Show diff view before accepting
    - Auto-update memo content with highlights
 
-10. **Memo Version History**
+11. **Memo Version History**
    - Store multiple memo versions
    - Compare versions side-by-side
    - Restore previous versions
 
-11. **Multi-Document Context**
+12. **Multi-Document Context**
     - Analyze all documents, not just latest
     - Extract insights from document changes over time
     - Streaming generation (show sections as they generate)
