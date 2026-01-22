@@ -4,8 +4,8 @@ from typing import List, Optional
 from uuid import UUID
 
 from app.db.session import get_db
-from app.models import Deal
-from app.schemas import DealCreate, DealUpdate, DealResponse
+from app.models import Deal, DealOperator, Operator
+from app.schemas import DealCreate, DealUpdate, DealResponse, AddOperatorRequest, UpdateOperatorRequest, DealOperatorResponse
 
 router = APIRouter(prefix="/deals", tags=["deals"])
 
@@ -124,3 +124,128 @@ def pass_deal(deal_id: UUID, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(deal)
     return deal
+
+
+@router.post("/{deal_id}/operators", response_model=DealOperatorResponse, status_code=201)
+def add_operator_to_deal(
+    deal_id: UUID,
+    request: AddOperatorRequest,
+    db: Session = Depends(get_db)
+):
+    """Add an operator (sponsor) to a deal"""
+    # Verify deal exists
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    # Verify operator exists
+    operator = db.query(Operator).filter(Operator.id == request.operator_id).first()
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    # Check if relationship already exists
+    existing = db.query(DealOperator).filter(
+        DealOperator.deal_id == deal_id,
+        DealOperator.operator_id == request.operator_id
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail="Operator is already associated with this deal"
+        )
+
+    # If setting as primary, unset any existing primary
+    if request.is_primary:
+        db.query(DealOperator).filter(
+            DealOperator.deal_id == deal_id,
+            DealOperator.is_primary == True
+        ).update({"is_primary": False})
+
+    # Create new relationship
+    deal_operator = DealOperator(
+        deal_id=deal_id,
+        operator_id=request.operator_id,
+        is_primary=request.is_primary
+    )
+    db.add(deal_operator)
+    db.commit()
+    db.refresh(deal_operator)
+    return deal_operator
+
+
+@router.delete("/{deal_id}/operators/{operator_id}", status_code=204)
+def remove_operator_from_deal(
+    deal_id: UUID,
+    operator_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Remove an operator (sponsor) from a deal"""
+    # Verify deal exists
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    # Find the relationship
+    deal_operator = db.query(DealOperator).filter(
+        DealOperator.deal_id == deal_id,
+        DealOperator.operator_id == operator_id
+    ).first()
+    if not deal_operator:
+        raise HTTPException(
+            status_code=404,
+            detail="Operator is not associated with this deal"
+        )
+
+    # Prevent removing the last operator
+    operator_count = db.query(DealOperator).filter(
+        DealOperator.deal_id == deal_id
+    ).count()
+    if operator_count <= 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove the last operator from a deal"
+        )
+
+    # Delete the relationship
+    db.delete(deal_operator)
+    db.commit()
+    return None
+
+
+@router.put("/{deal_id}/operators/{operator_id}", response_model=DealOperatorResponse)
+def update_deal_operator(
+    deal_id: UUID,
+    operator_id: UUID,
+    request: UpdateOperatorRequest,
+    db: Session = Depends(get_db)
+):
+    """Update an operator's relationship to a deal (e.g., set as primary)"""
+    # Verify deal exists
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    # Find the relationship
+    deal_operator = db.query(DealOperator).filter(
+        DealOperator.deal_id == deal_id,
+        DealOperator.operator_id == operator_id
+    ).first()
+    if not deal_operator:
+        raise HTTPException(
+            status_code=404,
+            detail="Operator is not associated with this deal"
+        )
+
+    # If setting as primary, unset any existing primary
+    if request.is_primary:
+        db.query(DealOperator).filter(
+            DealOperator.deal_id == deal_id,
+            DealOperator.is_primary == True,
+            DealOperator.id != deal_operator.id
+        ).update({"is_primary": False})
+
+    # Update the relationship
+    deal_operator.is_primary = request.is_primary
+    db.commit()
+    db.refresh(deal_operator)
+    return deal_operator
