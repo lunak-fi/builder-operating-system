@@ -340,12 +340,17 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
 **Phase 2 - Enhanced Transcript Integration:**
 
 1. **Master Memo Integration**
-   - **Priority:** Medium-High
-   - [ ] "Key Conversations" section: 2-3 sentence summaries of significant conversations
-   - [ ] "Open Items" section: Aggregated action items from all transcripts
-   - [ ] Source attribution tags on risks/questions linking to transcripts
-   - [ ] In-transcript highlighting when clicking insights
-   - [ ] Regenerate memo to include transcript insights
+   - ✅ **COMPLETE** - Implemented and tested (2026-01-22)
+   - ✅ "Key Conversations" section: Summarizes conversations with dates, topics, and sentiment
+   - ✅ "Open Items" section: Aggregated action items from all transcripts with assignees and priorities
+   - ✅ Color-coded priority indicators (🔴 High, 🟡 Medium, 🟢 Low)
+   - ✅ Conditional rendering (sections only appear when transcripts exist)
+   - ✅ Works for both early-stage and committed deal formats
+   - ⚠️ Future enhancement: Source attribution links to jump to specific transcripts
+   - ⚠️ Future enhancement: In-transcript highlighting when clicking insights
+   - **Backend commit:** ab56236
+   - **Frontend commit:** 57e2625
+   - **Tested on:** Frog Alley deal with conversation transcript
 
 2. **Enhanced Transcript Features**
    - **Priority:** Medium
