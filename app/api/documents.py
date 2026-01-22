@@ -208,6 +208,11 @@ async def upload_document(
     db.commit()
     db.refresh(db_document)
 
+    # Set document_date to upload time (created_at) as default
+    # This will be updated if parser extracts a better date (e.g., email date)
+    db_document.document_date = db_document.created_at
+    db.commit()
+
     # Trigger background document parsing
     from app.db.database import SessionLocal
     background_tasks.add_task(
@@ -230,6 +235,7 @@ async def upload_deal_document(
     document_type: str = "pitch_deck",
     topic: str | None = None,
     conversation_date: str | None = None,
+    document_date: str | None = None,
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
@@ -241,6 +247,10 @@ async def upload_deal_document(
     For transcripts, optionally provide:
     - topic: Conversation topic (e.g., "Sponsor Call - Q3 Review")
     - conversation_date: ISO 8601 date string (e.g., "2026-01-15T14:30:00Z")
+
+    For all documents, optionally provide:
+    - document_date: ISO 8601 date string for the document's event date (e.g., "2025-12-15T00:00:00Z")
+                     If not provided, defaults to upload time (created_at)
     """
     # Get file extension
     file_extension = Path(file.filename).suffix.lower()
@@ -285,6 +295,30 @@ async def upload_deal_document(
     db.add(db_document)
     db.commit()
     db.refresh(db_document)
+
+    # Set document_date
+    # Priority: user-provided > conversation_date (for transcripts) > upload time
+    if document_date:
+        try:
+            from datetime import datetime
+            db_document.document_date = datetime.fromisoformat(document_date.replace('Z', '+00:00'))
+        except ValueError:
+            logger.warning(f"Invalid document_date format: {document_date}, using upload time")
+            db_document.document_date = db_document.created_at
+    elif detected_type == "transcript" and conversation_date:
+        # For transcripts, use conversation_date as document_date
+        try:
+            from datetime import datetime
+            db_document.document_date = datetime.fromisoformat(conversation_date.replace('Z', '+00:00'))
+        except ValueError:
+            logger.warning(f"Invalid conversation_date format: {conversation_date}, using upload time")
+            db_document.document_date = db_document.created_at
+    else:
+        # Default to upload time
+        db_document.document_date = db_document.created_at
+
+    db.commit()
+    logger.info(f"Set document_date for document {db_document.id}")
 
     # Store transcript metadata if provided
     if detected_type == "transcript" and (topic or conversation_date):

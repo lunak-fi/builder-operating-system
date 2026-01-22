@@ -41,15 +41,21 @@ def generate_memo_for_deal(deal_id: UUID, db: Session) -> Memo:
         # Fetch related data
         operator = db.query(Operator).filter(Operator.id == deal.operator_id).first()
         underwriting = db.query(DealUnderwriting).filter(DealUnderwriting.deal_id == deal_id).first()
+
+        # Order by document_date (event date) first, then created_at as tiebreaker
         documents = db.query(DealDocument).filter(DealDocument.deal_id == deal_id).order_by(
+            DealDocument.document_date.desc(),
             DealDocument.created_at.desc()
         ).all()
 
-        # Fetch transcript documents specifically
+        # Fetch transcript documents specifically, ordered by event date
         transcripts = db.query(DealDocument).filter(
             DealDocument.deal_id == deal_id,
             DealDocument.document_type == "transcript"
-        ).order_by(DealDocument.created_at.desc()).all()
+        ).order_by(
+            DealDocument.document_date.desc(),
+            DealDocument.created_at.desc()
+        ).all()
 
         # Build context for AI generation
         context = _build_deal_context(deal, operator, underwriting, documents, transcripts)
