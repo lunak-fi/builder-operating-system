@@ -153,7 +153,8 @@ def process_transcript_ai_extraction(document_id: UUID, db_session_maker):
 @router.post("/upload", response_model=DealDocumentResponse, status_code=201)
 async def upload_document(
     file: UploadFile = File(...),
-    document_type: str = "pitch_deck",
+    document_type: str = Form("pitch_deck"),
+    document_date: str | None = Form(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
@@ -161,6 +162,10 @@ async def upload_document(
     Upload a document for processing.
     Supports: PDF, Excel (.xlsx, .xls), Text (.txt, .md), Email (.eml)
     No deal is created until extraction is run.
+
+    Optionally provide:
+    - document_date: ISO 8601 date string for the document's event date (e.g., "2025-12-15T00:00:00Z")
+                     If not provided, defaults to upload time (created_at)
     """
     # Get file extension
     file_extension = Path(file.filename).suffix.lower()
@@ -208,9 +213,18 @@ async def upload_document(
     db.commit()
     db.refresh(db_document)
 
-    # Set document_date to upload time (created_at) as default
-    # This will be updated if parser extracts a better date (e.g., email date)
-    db_document.document_date = db_document.created_at
+    # Set document_date
+    # Priority: user-provided > upload time
+    if document_date:
+        try:
+            from datetime import datetime
+            db_document.document_date = datetime.fromisoformat(document_date.replace('Z', '+00:00'))
+        except ValueError:
+            logger.warning(f"Invalid document_date format: {document_date}, using upload time")
+            db_document.document_date = db_document.created_at
+    else:
+        # Default to upload time (will be updated if parser extracts a better date, e.g., email date)
+        db_document.document_date = db_document.created_at
     db.commit()
 
     # Trigger background document parsing
