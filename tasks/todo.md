@@ -352,7 +352,30 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
    - **Frontend commit:** 57e2625
    - **Tested on:** Frog Alley deal with conversation transcript
 
-2. **Enhanced Transcript Features**
+2. **Document Chronology Fix**
+   - **Priority:** HIGH - Critical bug affecting memo accuracy
+   - **Problem:** Documents are ordered by upload time (`created_at`), not event date. If you upload a newer document first (Dec 15 report), then upload an older document (Dec 1 report), the memo generator incorrectly uses the Dec 1 report as "most recent" because it was uploaded last.
+   - **Impact:** Memo AI context may use outdated information, contradicting transcript dates and basing risk assessment on wrong financial snapshots
+   - **Solution:** Hybrid approach with database column + auto-detection + user input
+   - **Implementation tasks:**
+     - [ ] Database migration: Add `document_date` column to `deal_documents` table
+     - [ ] Backfill existing records with `created_at` as default
+     - [ ] Update DealDocument model with new field
+     - [ ] Update document upload API to accept optional `document_date` parameter
+     - [ ] Auto-detect dates for emails (from Date header) and transcripts (from conversation_date)
+     - [ ] Update document parser to extract email dates
+     - [ ] Update memo generator ordering: `order_by(document_date DESC, created_at DESC)`
+     - [ ] Add date picker to upload dialog UI
+     - [ ] (Optional) Update activity timeline to show event date vs upload date
+   - **Testing:**
+     - Upload Dec 15 report, then Dec 1 report → verify memo uses Dec 15
+     - Upload email → verify date auto-extracted
+     - Upload transcript → verify conversation_date used
+     - Upload PDF without date → verify fallback to upload time
+   - **Effort:** 3-4 hours
+   - **Plan file:** `/Users/kennethluna/.claude/plans/tidy-watching-hejlsberg.md`
+
+3. **Enhanced Transcript Features**
    - **Priority:** Medium
    - [ ] Filter bar for Activity Feed (type, date, has insights)
    - [ ] Upload dialog with transcript-specific fields (topic, participants, date/time)
@@ -361,7 +384,7 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
 
 **Phase 3 - Advanced Features:**
 
-3. **Multiple Sponsors Per Deal**
+4. **Multiple Sponsors Per Deal**
    - ✅ **COMPLETE** - Implemented and tested
    - **Problem:** Some deals have 2+ sponsors (e.g., The Ark has Aptitude Development + The Alley Family Office; 2910 North Arthur Ashe has AIP + PointsFive)
    - **Implementation complete:**
@@ -380,42 +403,40 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
      - Business validation (must keep at least one sponsor per deal)
    - **Commit:** af505f5 - "Complete Multiple Sponsors feature - add sponsor management API endpoints"
 
-4. **Advanced Transcript Features**
+5. **Advanced Transcript Features**
    - **Problem:** Need to upload and track conversation transcripts (sponsor calls, IC meetings, site visits) for each deal
    - [ ] Cross-transcript search functionality
    - [ ] Action item assignment and tracking (assignee, due date, status)
    - [ ] Export and reporting for transcripts and action items
    - [ ] Bulk operations for action items
 
-5. **Stage-Aware Memo Generation**
-   - **Problem:** Memos don't adapt content based on deal stage (new vs. committed deals need different risks/questions)
-   - **Enhancement:** Modify AI prompt based on deal status
-     - **New deals** (Received/Screening): Focus on investment decision risks, sponsor verification, due diligence questions
-     - **Committed deals** (Invested/Portfolio): Focus on portfolio monitoring, operational performance, exit strategy
-   - **Implementation:** Update `_build_memo_prompt()` in memo_generator.py to include deal status context
-   - **Priority:** Medium - Improves memo relevance and usefulness
+6. **Stage-Aware Memo Generation**
+   - ✅ **COMPLETE** - Already implemented!
+   - **Note:** This feature is listed as future work but is already working in production. The memo_generator.py has different prompts for early-stage deals (Investment Thesis, Key Risks, Open Questions) vs committed deals (Execution Status, Current Risks & Concerns, Action Items & Follow-Ups)
+   - **Commits:** 84f0f62, 7e3fc20
+   - Should be moved to completed features section
 
-6. **Configurable Metrics Dashboard**
+7. **Configurable Metrics Dashboard**
    - User selects which metrics to display
    - Pin/unpin metrics
    - Metric history timeline view
 
-7. **Collaborative Memo Editing**
+8. **Collaborative Memo Editing**
    - Rich text editor for memo sections
    - Track changes / version history
    - Comments on specific sections
 
-8. **Smart Metric Updates**
+9. **Smart Metric Updates**
    - Detect metric changes when document uploaded
    - Show diff view before accepting
    - Auto-update memo content with highlights
 
-9. **Memo Version History**
+10. **Memo Version History**
    - Store multiple memo versions
    - Compare versions side-by-side
    - Restore previous versions
 
-10. **Multi-Document Context**
+11. **Multi-Document Context**
     - Analyze all documents, not just latest
     - Extract insights from document changes over time
     - Streaming generation (show sections as they generate)

@@ -33,6 +33,12 @@ class DealDocument(Base):
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
+    # Document event date (report date, email date, conversation date, etc.)
+    # Falls back to created_at if not specified
+    document_date: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
