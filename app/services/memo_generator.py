@@ -45,8 +45,14 @@ def generate_memo_for_deal(deal_id: UUID, db: Session) -> Memo:
             DealDocument.created_at.desc()
         ).all()
 
+        # Fetch transcript documents specifically
+        transcripts = db.query(DealDocument).filter(
+            DealDocument.deal_id == deal_id,
+            DealDocument.document_type == "transcript"
+        ).order_by(DealDocument.created_at.desc()).all()
+
         # Build context for AI generation
-        context = _build_deal_context(deal, operator, underwriting, documents)
+        context = _build_deal_context(deal, operator, underwriting, documents, transcripts)
 
         # Get latest document text for additional context
         document_text = ""
@@ -88,9 +94,10 @@ def _build_deal_context(
     deal: Deal,
     operator: Operator | None,
     underwriting: DealUnderwriting | None,
-    documents: list[DealDocument]
+    documents: list[DealDocument],
+    transcripts: list[DealDocument]
 ) -> Dict[str, Any]:
-    """Build context dictionary from deal data"""
+    """Build context dictionary from deal data and transcript insights"""
 
     # Identify missing critical fields
     missing_fields = []
@@ -103,6 +110,36 @@ def _build_deal_context(
             missing_fields.append("yield_on_cost")
         if not underwriting.dscr_at_stabilization:
             missing_fields.append("dscr_at_stabilization")
+
+    # Aggregate transcript insights
+    transcript_summaries = []
+    all_action_items = []
+    all_key_decisions = []
+    all_risks = []
+
+    for transcript in transcripts:
+        if transcript.metadata_json and "ai_insights" in transcript.metadata_json:
+            insights = transcript.metadata_json["ai_insights"]
+
+            # Create summary for this transcript
+            topic = transcript.metadata_json.get("topic", "Untitled Conversation")
+            date = transcript.metadata_json.get("conversation_date", "Unknown date")
+
+            summary = {
+                "topic": topic,
+                "date": date,
+                "file_name": transcript.file_name,
+                "decisions_count": len(insights.get("key_decisions", [])),
+                "action_items_count": len(insights.get("action_items", [])),
+                "risks_count": len(insights.get("risks", [])),
+                "sentiment": insights.get("sentiment", "neutral")
+            }
+            transcript_summaries.append(summary)
+
+            # Aggregate insights
+            all_key_decisions.extend(insights.get("key_decisions", []))
+            all_action_items.extend(insights.get("action_items", []))
+            all_risks.extend(insights.get("risks", []))
 
     context = {
         # Deal basics
@@ -140,7 +177,14 @@ def _build_deal_context(
         "missing_fields": missing_fields,
 
         # Document count
-        "document_count": len(documents)
+        "document_count": len(documents),
+
+        # Transcript insights
+        "transcript_summaries": transcript_summaries,
+        "all_action_items": all_action_items,
+        "all_key_decisions": all_key_decisions,
+        "all_risks_from_transcripts": all_risks,
+        "has_transcripts": len(transcripts) > 0
     }
 
     return context
@@ -248,11 +292,24 @@ Underwriting Metrics (As Committed):
 LATEST UPDATE DOCUMENT:
 {document_text[:10000] if document_text else 'No recent update available'}
 
+CONVERSATION TRANSCRIPTS ({len(context['transcript_summaries'])} transcripts):
+{_format_transcript_summaries(context['transcript_summaries']) if context['has_transcripts'] else 'No conversation transcripts available'}
+
+AGGREGATED INSIGHTS FROM TRANSCRIPTS:
+- Key Decisions Made: {len(context['all_key_decisions'])} decisions
+{_format_list_items(context['all_key_decisions'][:5], prefix='  • ') if context['all_key_decisions'] else '  (None)'}
+
+- Action Items Identified: {len(context['all_action_items'])} items
+{_format_action_items(context['all_action_items'][:8]) if context['all_action_items'] else '  (None)'}
+
+- Risks from Conversations: {len(context['all_risks_from_transcripts'])} risks mentioned
+{_format_list_items(context['all_risks_from_transcripts'][:5], prefix='  • ') if context['all_risks_from_transcripts'] else '  (None)'}
+
 ---
 
 INSTRUCTIONS:
 
-Generate a portfolio monitoring memo with EXACTLY these three sections:
+Generate a portfolio monitoring memo with EXACTLY these five sections:
 
 ## Execution Status
 
@@ -289,15 +346,38 @@ Generate 5-8 SPECIFIC action items and questions to track. Focus on:
 
 Use markdown bullet points starting with strong verbs (Monitor, Request, Schedule, Review, Track, etc.)
 
+## Key Conversations
+
+{f"Summarize the {len(context['transcript_summaries'])} conversation transcript(s) in 2-4 bullet points. For each conversation:" if context['has_transcripts'] else "No conversation transcripts available yet. Write one bullet point:"}
+{'''- Include the date and topic
+- Highlight the most important update or decision discussed
+- Note any concerns or positive developments mentioned
+- Keep each bullet to 1-2 sentences''' if context['has_transcripts'] else '- State that no conversations have been recorded yet and suggest scheduling regular sponsor check-ins'}
+
+{f"Reference the transcript summaries provided above. Be specific about what was discussed." if context['has_transcripts'] else ""}
+
+## Open Items
+
+{f"List the {len(context['all_action_items'])} action item(s) from conversations as a checklist. For each item:" if context['all_action_items'] else "No action items from conversations yet. Write 2-3 bullet points:"}
+{'''- Format as: **[Assignee if known]:** Action description
+- Include priority indicators if relevant (🔴 High, 🟡 Medium)
+- Group by assignee or category if helpful
+- Keep descriptions concise (one line each)''' if context['all_action_items'] else '''- Note that no action items have been captured yet
+- Suggest next steps for portfolio monitoring (request updates, schedule site visit, review reports, etc.)
+- Focus on standard monitoring activities'''}
+
+Use markdown bullet points (- or *).
+
 CRITICAL REQUIREMENTS:
-1. Return ONLY the markdown content for these three sections - no introduction, no conclusion
+1. Return ONLY the markdown content for these five sections - no introduction, no conclusion
 2. Start with ## Execution Status as the first line
 3. Be SPECIFIC and reference the actual deal data - avoid generic statements
 4. Use bullet points (- or *) for all items
 5. Use **bold** to highlight key phrases in each bullet
 6. Do NOT invent data - only use information provided above
-7. Total output should be 400-600 words
+7. Total output should be 600-900 words (accounting for new transcript sections)
 8. Remember: this is a COMMITTED deal, so focus on monitoring execution, not evaluating the investment decision
+9. For transcript sections: if no transcripts exist, write brief placeholder content suggesting next steps
 
 Generate the memo now:"""
     else:
@@ -341,11 +421,24 @@ Missing Data Points: {', '.join(context['missing_fields']) if context['missing_f
 DOCUMENT EXCERPT (First 10k chars):
 {document_text[:10000] if document_text else 'No document text available'}
 
+CONVERSATION TRANSCRIPTS ({len(context['transcript_summaries'])} transcripts):
+{_format_transcript_summaries(context['transcript_summaries']) if context['has_transcripts'] else 'No conversation transcripts available'}
+
+AGGREGATED INSIGHTS FROM TRANSCRIPTS:
+- Key Decisions Made: {len(context['all_key_decisions'])} decisions
+{_format_list_items(context['all_key_decisions'][:5], prefix='  • ') if context['all_key_decisions'] else '  (None)'}
+
+- Action Items Identified: {len(context['all_action_items'])} items
+{_format_action_items(context['all_action_items'][:8]) if context['all_action_items'] else '  (None)'}
+
+- Risks from Conversations: {len(context['all_risks_from_transcripts'])} risks mentioned
+{_format_list_items(context['all_risks_from_transcripts'][:5], prefix='  • ') if context['all_risks_from_transcripts'] else '  (None)'}
+
 ---
 
 INSTRUCTIONS:
 
-Generate a professional investment memo with EXACTLY these three sections:
+Generate a professional investment memo with EXACTLY these five sections:
 
 ## Investment Thesis
 
@@ -382,16 +475,77 @@ Generate 5-8 ACTIONABLE due diligence questions that an investor should ask. Foc
 
 Use markdown bullet points starting with strong verbs (Verify, Confirm, Review, Investigate, etc.)
 
+## Key Conversations
+
+{f"Summarize the {len(context['transcript_summaries'])} conversation transcript(s) in 2-4 bullet points. For each conversation:" if context['has_transcripts'] else "No conversation transcripts available yet. Write one bullet point:"}
+{'''- Include the date and topic
+- Highlight the most important takeaway or decision
+- Note the overall sentiment/tone
+- Keep each bullet to 1-2 sentences''' if context['has_transcripts'] else '- State that no conversations have been recorded yet and suggest scheduling initial sponsor calls'}
+
+{f"Reference the transcript summaries provided above. Be specific about what was discussed and decided." if context['has_transcripts'] else ""}
+
+## Open Items
+
+{f"List the {len(context['all_action_items'])} action item(s) from conversations as a checklist. For each item:" if context['all_action_items'] else "No action items from conversations yet. Write 2-3 bullet points:"}
+{'''- Format as: **[Assignee if known]:** Action description
+- Include priority indicators if relevant (🔴 High, 🟡 Medium)
+- Group by assignee or category if helpful
+- Keep descriptions concise (one line each)''' if context['all_action_items'] else '''- Note that no action items have been captured yet
+- Suggest next steps for initial due diligence (schedule calls, request documents, etc.)
+- Focus on standard early-stage action items'''}
+
+Use markdown bullet points (- or *).
+
 CRITICAL REQUIREMENTS:
-1. Return ONLY the markdown content for these three sections - no introduction, no conclusion
+1. Return ONLY the markdown content for these five sections - no introduction, no conclusion
 2. Start with ## Investment Thesis as the first line
 3. Be SPECIFIC and reference the actual deal data - avoid generic statements
 4. Use bullet points (- or *) for all items
 5. Use **bold** to highlight key phrases in each bullet
 6. Do NOT invent or hallucinate data - only use information provided above
-7. If data is missing, acknowledge it in the Open Questions section
-8. Total output should be 400-600 words
+7. If data is missing, acknowledge it in the appropriate section
+8. Total output should be 600-900 words (accounting for new transcript sections)
+9. For transcript sections: if no transcripts exist, write brief placeholder content suggesting next steps
 
 Generate the memo now:"""
 
     return prompt
+
+
+def _format_transcript_summaries(summaries: list) -> str:
+    """Format transcript summaries for the prompt"""
+    if not summaries:
+        return "(None)"
+
+    lines = []
+    for ts in summaries:
+        line = f"  • {ts['date']} - {ts['topic']} ({ts['sentiment']} sentiment)"
+        line += f" [{ts['decisions_count']} decisions, {ts['action_items_count']} action items, {ts['risks_count']} risks]"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def _format_list_items(items: list, prefix: str = "  • ") -> str:
+    """Format a list of strings with prefix"""
+    if not items:
+        return "(None)"
+    return "\n".join([f"{prefix}{item}" for item in items])
+
+
+def _format_action_items(action_items: list) -> str:
+    """Format action items with assignee and priority"""
+    if not action_items:
+        return "(None)"
+
+    lines = []
+    for item in action_items:
+        description = item.get("description", "Unknown action")
+        assignee = item.get("assignee") or "Unassigned"
+        priority = item.get("priority", "medium")
+
+        priority_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(priority, "⚪")
+        lines.append(f"  • {priority_emoji} **{assignee}:** {description}")
+
+    return "\n".join(lines)
