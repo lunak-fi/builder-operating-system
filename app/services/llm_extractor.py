@@ -79,6 +79,132 @@ def extract_deal_data_from_text(pdf_text: str) -> Dict[str, Any]:
         raise LLMExtractionError(f"Unexpected error during LLM extraction: {str(e)}")
 
 
+def extract_deal_data_from_vision(
+    pdf_path: str,
+    text_fallback: str = None
+) -> Dict[str, Any]:
+    """
+    Extract structured deal data from PDF using Claude Vision.
+
+    Intelligently selects 2-4 key pages to send as images based on content.
+
+    Args:
+        pdf_path: Path to PDF file
+        text_fallback: Optional extracted text for identifying key pages
+
+    Returns:
+        Dictionary with extracted structured data (same format as text extraction)
+
+    Raises:
+        LLMExtractionError: If extraction fails
+    """
+    try:
+        from app.services.pdf_extractor import (
+            extract_key_pages_as_images,
+            identify_financial_pages,
+            PDFExtractionError
+        )
+        import pdfplumber
+
+        # Identify which pages to extract as images
+        page_numbers = None
+        if text_fallback:
+            # Use text hints to find financial pages
+            with pdfplumber.open(pdf_path) as pdf:
+                total_pages = len(pdf.pages)
+            page_numbers = identify_financial_pages(text_fallback, total_pages)
+
+        # Extract key pages as images (limit to 4 pages max)
+        logger.info(f"Extracting PDF pages as images: {pdf_path}")
+        images = extract_key_pages_as_images(
+            pdf_path,
+            page_numbers=page_numbers,
+            max_pages=4,
+            max_width=1536  # Good balance between quality and tokens
+        )
+
+        # Build message content with images + text prompt
+        content = []
+
+        # Add all images first
+        for page_num, media_type, base64_data in images:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64_data
+                }
+            })
+
+        # Add text extraction prompt
+        extraction_prompt = _build_extraction_prompt("")  # Empty text, vision will read images
+
+        # Add vision-specific instructions
+        vision_instructions = """
+
+IMPORTANT - VISION EXTRACTION INSTRUCTIONS:
+- You are viewing PDF pages as IMAGES, not text
+- Carefully read ALL visible text, tables, charts, and graphics
+- Pay special attention to:
+  * Financial tables and metrics (IRR, Equity Multiple, DSCR, Cap Rates)
+  * Property details tables (Square Footage, Units, Address)
+  * Investment summary boxes or callouts
+  * Charts with labeled values
+- Extract numbers EXACTLY as shown (including decimals and units)
+- If metrics are in a table, read row/column headers to understand context
+- Some pages may have multiple columns - read left to right, top to bottom
+- CRITICAL: Focus on the PRIMARY investment opportunity (usually prominently featured)
+- IGNORE any "Track Record", "Case Studies", "Past Performance", or "Realized Deals" sections
+- Extract data for the CURRENT deal being offered, NOT historical completed deals"""
+
+        content.append({
+            "type": "text",
+            "text": extraction_prompt + vision_instructions
+        })
+
+        # Initialize Anthropic client
+        settings = LLMSettings()
+        client = Anthropic(
+            api_key=settings.anthropic_api_key,
+            max_retries=2
+        )
+
+        logger.info(f"Sending vision extraction request to Claude API ({len(images)} images)")
+
+        # Call Claude Vision API
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            temperature=0,
+            messages=[
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ]
+        )
+
+        # Extract JSON from response (same as text extraction)
+        response_text = message.content[0].text
+        logger.info(f"Received vision response from Claude API ({len(response_text)} chars)")
+        logger.info(f"Token usage: {message.usage.input_tokens} input, {message.usage.output_tokens} output")
+
+        # Parse JSON response (reuse existing function)
+        extracted_data = _parse_extraction_response(response_text)
+
+        logger.info("Successfully extracted structured data from PDF using vision")
+        return extracted_data
+
+    except PDFExtractionError as e:
+        logger.error(f"Image extraction failed: {str(e)}")
+        raise LLMExtractionError(f"Vision extraction failed (image conversion): {str(e)}")
+    except Exception as e:
+        if isinstance(e, LLMExtractionError):
+            raise
+        raise LLMExtractionError(f"Unexpected error during vision extraction: {str(e)}")
+
+
 def _build_extraction_prompt(pdf_text: str) -> str:
     """
     Build the extraction prompt for Claude.
@@ -215,6 +341,14 @@ IMPORTANT INSTRUCTIONS:
    - dscr_at_stabilization (DSCR)
    - total_project_cost or land_cost (Acquisition/Purchase Price)
    - equity_required (Equity/LP Equity)
+22. PRIMARY DEAL FOCUS - CRITICAL: Extract data for the PRIMARY investment opportunity being offered:
+   - IGNORE sections titled: "Track Record", "Case Studies", "Past Performance", "Realized Deals", "Portfolio History", "Success Stories", "Prior Investments"
+   - The PRIMARY deal is usually featured prominently on the cover page and has detailed financial projections
+   - Case studies are HISTORICAL deals already completed - do NOT extract these
+   - If multiple properties are mentioned, extract the one being OFFERED FOR INVESTMENT (usually the first/main property)
+   - Look for phrases like "Investment Opportunity", "Offering", "Current Deal", "Target Property"
+   - The primary deal typically has forward-looking projections (hold period, exit strategy)
+   - Case studies typically show historical returns and sale dates in the past
 
 Return only the JSON object, nothing else."""
 
@@ -317,6 +451,45 @@ def _normalize_underwriting_fields(raw_data: Dict[str, Any]) -> Dict[str, Any]:
                     break
 
     return normalized
+
+
+def merge_extraction_data(pdf_data: Dict[str, Any], excel_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Merge PDF narrative with Excel financials.
+    Excel takes precedence for all financial metrics.
+
+    Args:
+        pdf_data: Extracted data from PDF (deal narrative, sponsors, etc.)
+        excel_data: Extracted data from Excel (financial metrics)
+
+    Returns:
+        Merged dictionary with PDF narrative + Excel financials
+    """
+    merged = pdf_data.copy()
+
+    # Override all underwriting fields with Excel data
+    if "underwriting" in excel_data:
+        merged["underwriting"] = excel_data["underwriting"]
+        logger.info(f"Merged {len(excel_data['underwriting'])} financial metrics from Excel")
+
+    # Keep deal narrative from PDF (but can enhance with Excel data)
+    # Keep operators from PDF (sponsor identification)
+    # Keep principals from PDF (team bios)
+
+    # Merge extraction metadata
+    pdf_metadata = pdf_data.get("_extraction_metadata", {})
+    excel_metadata = excel_data.get("_extraction_metadata", {})
+
+    merged["_extraction_metadata"] = {
+        "method": "merged",
+        "pdf_source": pdf_metadata,
+        "excel_source": excel_metadata,
+        "merged": True
+    }
+
+    logger.info("Successfully merged PDF and Excel extraction data")
+
+    return merged
 
 
 def _validate_extracted_values(data: Dict[str, Any]) -> None:

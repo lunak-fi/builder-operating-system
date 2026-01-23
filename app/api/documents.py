@@ -15,7 +15,11 @@ from app.schemas import DealDocumentResponse, ActivityFeedResponse, ActivityItem
 from pydantic import BaseModel
 from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
 from app.services.document_parser import parse_document, DocumentParserError
-from app.services.llm_extractor import extract_deal_data_from_text, LLMExtractionError
+from app.services.llm_extractor import (
+    extract_deal_data_from_text,
+    LLMExtractionError,
+    merge_extraction_data
+)
 from app.services.excel_analyst import analyze_financial_model, ExcelAnalystError
 from app.services.auto_populate import populate_database_from_extraction, AutoPopulationError
 
@@ -437,8 +441,51 @@ def get_deal_activity(deal_id: UUID, db: Session = Depends(get_db)):
     return ActivityFeedResponse(activities=activities)
 
 
+def find_related_excel_documents(document_id: UUID, db: Session) -> List[DealDocument]:
+    """
+    Find Excel documents related to the given document by deal_id.
+
+    Only searches for Excel files already linked to the same deal.
+    Used for re-extraction when Excel is uploaded later.
+
+    Args:
+        document_id: ID of the document to find companions for
+        db: Database session
+
+    Returns:
+        List of related Excel documents (only if same deal_id)
+    """
+    document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+
+    if not document:
+        return []
+
+    # Only find related docs if document is already linked to a deal
+    if document.deal_id:
+        deal_docs = db.query(DealDocument).filter(
+            DealDocument.id != document_id,
+            DealDocument.deal_id == document.deal_id,
+            DealDocument.document_type == "financial_model"
+        ).all()
+
+        if deal_docs:
+            logger.info(f"Found {len(deal_docs)} related Excel documents by deal_id")
+            return deal_docs
+
+    return []
+
+
+class ExtractRequest(BaseModel):
+    """Request body for extraction with optional related documents"""
+    related_document_ids: List[UUID] | None = None
+
+
 @router.post("/{document_id}/extract")
-def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
+def extract_structured_data(
+    document_id: UUID,
+    request: ExtractRequest | None = None,
+    db: Session = Depends(get_db)
+):
     """
     Extract structured data from document using LLM (preview only).
 
@@ -466,9 +513,37 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No parsed text available")
 
     try:
+        # Check for related documents (Excel models to merge with PDF)
+        related_excel_docs = []
+
+        if request and request.related_document_ids:
+            # User explicitly provided related documents
+            related_excel_docs = db.query(DealDocument).filter(
+                DealDocument.id.in_(request.related_document_ids),
+                DealDocument.document_type == "financial_model"
+            ).all()
+            logger.info(f"Using {len(related_excel_docs)} user-specified related documents")
+        elif document.deal_id:
+            # Document already linked to a deal - check for Excel files on same deal
+            # (Used for re-extraction when Excel uploaded later)
+            related_excel_docs = find_related_excel_documents(document_id, db)
+
         # Determine extraction method based on document type and content
         use_vision = False
         extraction_method = "text"
+        excel_data = None
+
+        # If we have related Excel documents, extract from them first
+        if related_excel_docs and document.document_type == "offer_memo":
+            excel_doc = related_excel_docs[0]  # Use first Excel doc
+            logger.info(f"Extracting financial data from related Excel: {excel_doc.id}")
+
+            try:
+                excel_data = analyze_financial_model(excel_path=excel_doc.file_url)
+                logger.info(f"Successfully extracted {len(excel_data.get('underwriting', {}))} metrics from Excel")
+            except ExcelAnalystError as e:
+                logger.warning(f"Excel extraction failed, will use PDF only: {str(e)}")
+                excel_data = None
 
         # Excel extraction for financial models
         if document.document_type == "financial_model":
@@ -524,6 +599,13 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
                 "method": extraction_method,
                 "document_id": str(document_id)
             }
+
+            # Merge with Excel data if available
+            if excel_data:
+                logger.info("Merging PDF narrative with Excel financials")
+                extracted_data = merge_extraction_data(extracted_data, excel_data)
+                extraction_method = "merged"
+
         else:
             # Fallback: text-based extraction
             logger.info(f"Starting text extraction for document {document_id}")
@@ -533,7 +615,13 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
                 "document_id": str(document_id)
             }
 
-        logger.info(f"Deal LLM extraction completed for document {document_id}")
+            # Merge with Excel data if available
+            if excel_data:
+                logger.info("Merging text extraction with Excel financials")
+                extracted_data = merge_extraction_data(extracted_data, excel_data)
+                extraction_method = "merged"
+
+        logger.info(f"Deal extraction completed for document {document_id} (method: {extraction_method})")
 
         # Search for matching operators for EACH extracted sponsor
         operator_matches_by_extracted = []
@@ -580,6 +668,140 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Unexpected error during extraction: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+
+@router.post("/deals/{deal_id}/re-extract")
+def re_extract_deal(deal_id: UUID, db: Session = Depends(get_db)):
+    """
+    Re-extract data for an existing deal.
+
+    Use case: Excel model uploaded later, need to re-run extraction with Excel data.
+
+    This endpoint:
+    1. Finds the primary PDF for the deal
+    2. Finds related Excel documents by deal_id
+    3. Re-runs extraction with merging
+    4. Returns updated extraction data (does NOT update deal records)
+
+    Returns extraction preview for user to confirm before applying changes.
+    """
+    from app.models import Deal
+
+    # Verify deal exists
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    # Find primary PDF document for this deal
+    pdf_doc = db.query(DealDocument).filter(
+        DealDocument.deal_id == deal_id,
+        DealDocument.document_type == "offer_memo"
+    ).first()
+
+    if not pdf_doc:
+        raise HTTPException(
+            status_code=400,
+            detail="No PDF document found for this deal"
+        )
+
+    # Check if PDF has parsed text
+    if pdf_doc.parsing_status != "completed" or not pdf_doc.parsed_text:
+        raise HTTPException(
+            status_code=400,
+            detail="PDF document not fully parsed yet"
+        )
+
+    try:
+        # Find related Excel documents by deal_id
+        excel_docs = db.query(DealDocument).filter(
+            DealDocument.deal_id == deal_id,
+            DealDocument.document_type == "financial_model",
+            DealDocument.parsing_status == "completed"
+        ).all()
+
+        excel_data = None
+
+        if excel_docs:
+            logger.info(f"Re-extracting with {len(excel_docs)} Excel documents")
+            excel_doc = excel_docs[0]  # Use first Excel
+
+            try:
+                excel_data = analyze_financial_model(excel_path=excel_doc.file_url)
+                logger.info(f"Extracted {len(excel_data.get('underwriting', {}))} metrics from Excel")
+            except ExcelAnalystError as e:
+                logger.warning(f"Excel extraction failed: {str(e)}")
+                excel_data = None
+
+        # Extract from PDF
+        logger.info(f"Re-extracting from PDF {pdf_doc.id}")
+
+        # Determine if we need vision extraction
+        metadata = pdf_doc.metadata_json or {}
+        has_images = metadata.get("has_images", False)
+        text_too_short = len(pdf_doc.parsed_text or "") < 5000
+
+        if has_images or text_too_short:
+            from app.services.llm_extractor import extract_deal_data_from_vision
+            extracted_data = extract_deal_data_from_vision(
+                pdf_path=pdf_doc.file_url,
+                text_fallback=pdf_doc.parsed_text
+            )
+            extraction_method = "vision"
+        else:
+            extracted_data = extract_deal_data_from_text(pdf_doc.parsed_text)
+            extraction_method = "text"
+
+        # Merge with Excel if available
+        if excel_data:
+            logger.info("Merging PDF with Excel data")
+            extracted_data = merge_extraction_data(extracted_data, excel_data)
+            extraction_method = "merged"
+
+        # Find operator matches
+        operator_matches_by_extracted = []
+        operators_data = extracted_data.get("operators", [])
+
+        for operator_data in operators_data:
+            if operator_data and operator_data.get("name"):
+                extracted_name = operator_data.get("name")
+                search_term = f"%{extracted_name}%"
+
+                from app.models import Operator
+                matching_operators = db.query(Operator).filter(
+                    (Operator.name.ilike(search_term)) |
+                    (Operator.legal_name.ilike(search_term))
+                ).limit(10).all()
+
+                operator_matches_by_extracted.append({
+                    "extracted_name": extracted_name,
+                    "is_primary": operator_data.get("is_primary", False),
+                    "matches": [
+                        {
+                            "id": str(op.id),
+                            "name": op.name,
+                            "legal_name": op.legal_name,
+                            "hq_city": op.hq_city,
+                            "hq_state": op.hq_state
+                        }
+                        for op in matching_operators
+                    ]
+                })
+
+        return {
+            "success": True,
+            "deal_id": str(deal_id),
+            "extracted_data": extracted_data,
+            "operator_matches": operator_matches_by_extracted,
+            "extraction_method": extraction_method,
+            "message": "Re-extraction complete. Review data and use /confirm endpoint to apply changes."
+        }
+
+    except LLMExtractionError as e:
+        logger.error(f"Re-extraction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Re-extraction failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error during re-extraction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Re-extraction failed: {str(e)}")
 
 
 @router.post("/{document_id}/confirm")
