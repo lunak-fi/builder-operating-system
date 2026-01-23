@@ -564,15 +564,6 @@ def confirm_extraction(
 
         logger.info(f"Deal created successfully: deal_id={result['deal_id']}")
 
-        # Auto-generate memo for the new deal
-        try:
-            from app.services.memo_generator import generate_memo_for_deal
-            generate_memo_for_deal(result["deal_id"], db)
-            logger.info(f"Auto-generated memo for deal {result['deal_id']}")
-        except Exception as e:
-            logger.warning(f"Memo generation failed for deal {result['deal_id']}: {e}")
-            # Don't fail the request - memo can be regenerated later
-
         return {
             "success": True,
             "document_id": str(document_id),

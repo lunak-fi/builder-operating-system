@@ -159,33 +159,40 @@ def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> D
 
     # Geocode and standardize MSA
     try:
-        from app.services.geocoding import MSAGeocoder
-        from datetime import datetime
+        # DISABLED: Geocoding was blocking deal creation for 2.5+ minutes
+        # The MSAGeocoder() initialization loads Census shapefiles (2.5+ min)
+        # Geocoding can be done later via background job or manual trigger
+        # Fallback: Use LLM-extracted MSA
+        deal_fields["msa_source"] = "llm_extraction"
+        logger.info("Skipping geocoding during deal creation, using LLM-extracted MSA")
 
-        geocoder = MSAGeocoder()
+        # from app.services.geocoding import MSAGeocoder
+        # from datetime import datetime
+        #
+        # geocoder = MSAGeocoder()  # SLOW: Loads shapefile, takes 2.5+ minutes
+        #
+        # # Extract address components
+        # address = deal_data.get("address_line1", "")
+        # city = ""  # Could extract from address if needed
+        # state = deal_data.get("state", "")
+        # zipcode = deal_data.get("postal_code", "")
 
-        # Extract address components
-        address = deal_data.get("address_line1", "")
-        city = ""  # Could extract from address if needed
-        state = deal_data.get("state", "")
-        zipcode = deal_data.get("postal_code", "")
-
-        # Attempt geocoding if we have address data
-        if address or (city and state):
-            geo_result = geocoder.standardize_market(address, city, state, zipcode)
-
-            if geo_result["geocoded"]:
-                # Use standardized MSA from Census data
-                deal_fields["msa"] = geo_result["msa"]
-                deal_fields["latitude"] = geo_result["latitude"]
-                deal_fields["longitude"] = geo_result["longitude"]
-                deal_fields["geocoded_at"] = datetime.utcnow()
-                deal_fields["msa_source"] = "census_geocoder"
-                logger.info(f"Geocoded address to MSA: {geo_result['msa']}")
-            else:
-                # Fallback: Use LLM-extracted MSA
-                deal_fields["msa_source"] = "llm_extraction"
-                logger.warning("Geocoding failed, using LLM-extracted MSA")
+        # # Attempt geocoding if we have address data
+        # if address or (city and state):
+        #     geo_result = geocoder.standardize_market(address, city, state, zipcode)
+        #
+        #     if geo_result["geocoded"]:
+        #         # Use standardized MSA from Census data
+        #         deal_fields["msa"] = geo_result["msa"]
+        #         deal_fields["latitude"] = geo_result["latitude"]
+        #         deal_fields["longitude"] = geo_result["longitude"]
+        #         deal_fields["geocoded_at"] = datetime.utcnow()
+        #         deal_fields["msa_source"] = "census_geocoder"
+        #         logger.info(f"Geocoded address to MSA: {geo_result['msa']}")
+        #     else:
+        #         # Fallback: Use LLM-extracted MSA
+        #         deal_fields["msa_source"] = "llm_extraction"
+        #         logger.warning("Geocoding failed, using LLM-extracted MSA")
 
     except Exception as e:
         # Geocoding error - use LLM extraction as fallback
