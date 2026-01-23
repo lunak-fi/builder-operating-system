@@ -85,9 +85,11 @@ def _build_extraction_prompt(pdf_text: str) -> str:
 
     Uses a comprehensive prompt that extracts all data in one pass.
     """
-    # Truncate text if too long (keep first ~50k chars to stay within context limits)
-    if len(pdf_text) > 50000:
-        pdf_text = pdf_text[:50000] + "\n\n[... text truncated ...]"
+    # Increase limit to 100k chars to ensure middle pages (where metrics often are) aren't truncated
+    # Example: "Streets of Chester" has all metrics on page 5 (middle of deck)
+    if len(pdf_text) > 100000:
+        pdf_text = pdf_text[:100000] + "\n\n[... text truncated ...]"
+        logger.info(f"Truncated PDF text at 100k characters")
 
     prompt = f"""You are analyzing a commercial real estate investment memorandum. Extract all relevant structured data from this document.
 
@@ -187,6 +189,32 @@ IMPORTANT INSTRUCTIONS:
 15. For hard_cost, include construction costs, development costs, building costs, renovation costs, renovation budget, CapEx, capital improvements, or improvement costs
 16. For soft_cost, include fees, permits, architecture, engineering costs, closing costs, or transaction costs
 17. For total_project_cost, calculate the sum of land_cost + hard_cost + soft_cost if not explicitly stated
+18. SECTION PRIORITIZATION - Financial metrics are CRITICAL and commonly found in:
+   - Cover page / Executive Summary
+   - "Investment Highlights" or "Investment Summary" sections
+   - "Capitalization & Projected Returns" tables
+   - "Financial Summary" or "Returns" sections
+   - "Underwriting Assumptions" pages (often middle or end of deck)
+   Search ALL these sections thoroughly before concluding a metric is not present.
+19. SQUARE FOOTAGE DISAMBIGUATION - For "building_sf", extract TOTAL PROPERTY square footage:
+   - Look for: "Total SF", "Building Size", "Gross Building Area", "Rentable SF", "Total Square Feet", "Area"
+   - DO NOT use: "Average Unit Size", "Unit SF", "Typical Unit", individual unit square footages
+   - Example: If document says "718 SF average unit" and "14,360 SF total building", use 14,360
+20. FINANCIAL METRIC VARIATIONS - Map these common variations to standard fields:
+   - levered_irr: "Levered IRR", "LP IRR", "Projected LP IRR, Net", "Net IRR", "IRR to Equity"
+   - unlevered_irr: "Unlevered IRR", "Gross IRR", "Projected IRR, Gross", "Project Level IRR"
+   - equity_multiple: "Equity Multiple", "EM", "MOIC", "Projected EM", "Projected LP EM, Net", "Net EM"
+   - entry_cap_rate: "Entry Cap Rate", "Going-In Cap Rate", "Purchase Cap Rate"
+   - exit_cap_rate: "Exit Cap Rate", "Terminal Cap Rate", "Reversion Cap Rate"
+   - yield_on_cost: "Yield on Cost", "YoC", "Stabilized YoC", "Stabilized Yield"
+   - dscr_at_stabilization: "DSCR", "Debt Service Coverage Ratio", "Stabilized DSCR"
+   Convert ALL percentages to decimals (25.6% → 0.256, 2.4x → 2.4)
+21. METRIC EXTRACTION PRIORITY - These are HIGH PRIORITY, extract if present:
+   - levered_irr (Levered/LP/Net IRR)
+   - equity_multiple (Equity Multiple/EM/MOIC)
+   - dscr_at_stabilization (DSCR)
+   - total_project_cost or land_cost (Acquisition/Purchase Price)
+   - equity_required (Equity/LP Equity)
 
 Return only the JSON object, nothing else."""
 
@@ -235,6 +263,9 @@ def _parse_extraction_response(response_text: str) -> Dict[str, Any]:
         # Normalize underwriting fields to handle any variations
         if "underwriting" in data:
             data["underwriting"] = _normalize_underwriting_fields(data["underwriting"])
+
+        # Validate extracted values (logs warnings, doesn't fail)
+        _validate_extracted_values(data)
 
         return data
 
@@ -286,3 +317,51 @@ def _normalize_underwriting_fields(raw_data: Dict[str, Any]) -> Dict[str, Any]:
                     break
 
     return normalized
+
+
+def _validate_extracted_values(data: Dict[str, Any]) -> None:
+    """
+    Validate extracted values for common errors and log warnings.
+    Does not raise exceptions - just logs for manual review.
+    """
+    warnings = []
+
+    # Validate deal fields
+    deal = data.get("deal", {})
+
+    # Building SF sanity check
+    building_sf = deal.get("building_sf")
+    if building_sf is not None:
+        if building_sf < 500:
+            warnings.append(f"building_sf ({building_sf}) seems very small - may be unit-level, not property-level")
+        elif building_sf > 10000000:
+            warnings.append(f"building_sf ({building_sf}) seems unrealistically large")
+
+    # Underwriting validations
+    underwriting = data.get("underwriting", {})
+
+    # IRR sanity check
+    levered_irr = underwriting.get("levered_irr")
+    if levered_irr is not None:
+        if levered_irr > 1.0:  # 100%
+            warnings.append(f"levered_irr ({levered_irr}) exceeds 100% - may be formatted as percentage not decimal")
+        elif levered_irr < -0.5:  # -50%
+            warnings.append(f"levered_irr ({levered_irr}) is extremely negative")
+
+    # Equity multiple sanity check
+    equity_multiple = underwriting.get("equity_multiple")
+    if equity_multiple is not None:
+        if equity_multiple < 0.5 or equity_multiple > 10:
+            warnings.append(f"equity_multiple ({equity_multiple}) outside typical range (0.5-10x)")
+
+    # DSCR sanity check
+    dscr = underwriting.get("dscr_at_stabilization")
+    if dscr is not None:
+        if dscr < 0.5 or dscr > 5:
+            warnings.append(f"dscr_at_stabilization ({dscr}) outside typical range (0.5-5.0)")
+
+    # Log all warnings
+    if warnings:
+        logger.warning(f"Extraction validation warnings ({len(warnings)} issues found):")
+        for warning in warnings:
+            logger.warning(f"  - {warning}")
