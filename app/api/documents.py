@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
 from app.services.document_parser import parse_document, DocumentParserError
 from app.services.llm_extractor import extract_deal_data_from_text, LLMExtractionError
+from app.services.excel_analyst import analyze_financial_model, ExcelAnalystError
 from app.services.auto_populate import populate_database_from_extraction, AutoPopulationError
 
 logger = logging.getLogger(__name__)
@@ -465,9 +466,73 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No parsed text available")
 
     try:
-        # Extract deal data from parsed text
-        logger.info(f"Starting deal LLM extraction for document {document_id}")
-        extracted_data = extract_deal_data_from_text(document.parsed_text)
+        # Determine extraction method based on document type and content
+        use_vision = False
+        extraction_method = "text"
+
+        # Excel extraction for financial models
+        if document.document_type == "financial_model":
+            logger.info(f"Starting Excel extraction for document {document_id}")
+            extraction_method = "excel"
+
+            try:
+                extracted_data = analyze_financial_model(
+                    excel_path=document.file_url
+                )
+
+                # Add deal placeholder (Excel doesn't have deal narrative)
+                extracted_data["deal"] = {
+                    "deal_name": "Deal extracted from Excel model",
+                    "internal_code": None
+                }
+                extracted_data["operators"] = []
+                extracted_data["principals"] = []
+
+            except ExcelAnalystError as e:
+                logger.error(f"Excel extraction failed: {str(e)}")
+                raise LLMExtractionError(f"Excel extraction failed: {str(e)}")
+
+        # Use vision for PDFs with images or garbled text
+        elif document.document_type == "offer_memo":
+            metadata = document.metadata_json or {}
+            has_images = metadata.get("has_images", False)
+
+            # Check if text is too short (likely failed extraction)
+            text_too_short = len(document.parsed_text or "") < 5000
+
+            if has_images or text_too_short:
+                use_vision = True
+                extraction_method = "vision"
+                logger.info(f"Using vision extraction (has_images={has_images}, text_length={len(document.parsed_text or '')})")
+
+            # Extract deal data
+            logger.info(f"Starting deal LLM extraction for document {document_id} (method: {extraction_method})")
+
+            if use_vision:
+                # Vision-based extraction
+                from app.services.llm_extractor import extract_deal_data_from_vision
+                extracted_data = extract_deal_data_from_vision(
+                    pdf_path=document.file_url,
+                    text_fallback=document.parsed_text
+                )
+            else:
+                # Text-based extraction (existing)
+                extracted_data = extract_deal_data_from_text(document.parsed_text)
+
+            # Store extraction method in metadata for tracking
+            extracted_data["_extraction_metadata"] = {
+                "method": extraction_method,
+                "document_id": str(document_id)
+            }
+        else:
+            # Fallback: text-based extraction
+            logger.info(f"Starting text extraction for document {document_id}")
+            extracted_data = extract_deal_data_from_text(document.parsed_text)
+            extracted_data["_extraction_metadata"] = {
+                "method": "text",
+                "document_id": str(document_id)
+            }
+
         logger.info(f"Deal LLM extraction completed for document {document_id}")
 
         # Search for matching operators for EACH extracted sponsor
@@ -505,7 +570,8 @@ def extract_structured_data(document_id: UUID, db: Session = Depends(get_db)):
             "success": True,
             "document_id": str(document_id),
             "extracted_data": extracted_data,
-            "operator_matches": operator_matches_by_extracted
+            "operator_matches": operator_matches_by_extracted,
+            "extraction_method": extraction_method
         }
 
     except LLMExtractionError as e:
