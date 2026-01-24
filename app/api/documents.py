@@ -32,6 +32,7 @@ class ConfirmExtractionRequest(BaseModel):
     """Request body for confirming extraction and creating deal"""
     operator_ids: List[UUID]
     extracted_data: dict
+    related_document_ids: List[UUID] | None = None  # Excel or other related docs to link to deal
 
 # Mapping of file extensions to document types
 ALLOWED_EXTENSIONS = {
@@ -848,6 +849,15 @@ def confirm_extraction(
 
         # Link document to the newly created deal
         document.deal_id = result["deal_id"]
+
+        # Also link any related documents (e.g., Excel files) to the deal
+        if request.related_document_ids:
+            for related_doc_id in request.related_document_ids:
+                related_doc = db.query(DealDocument).filter(DealDocument.id == related_doc_id).first()
+                if related_doc:
+                    related_doc.deal_id = result["deal_id"]
+                    logger.info(f"Linked related document {related_doc_id} to deal {result['deal_id']}")
+
         db.commit()
 
         logger.info(f"Deal created successfully: deal_id={result['deal_id']}")

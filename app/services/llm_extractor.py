@@ -325,7 +325,7 @@ IMPORTANT INSTRUCTIONS:
 19. SQUARE FOOTAGE DISAMBIGUATION - For "building_sf", extract TOTAL PROPERTY square footage:
    - Look for: "Total SF", "Building Size", "Gross Building Area", "Rentable SF", "Total Square Feet", "Area"
    - DO NOT use: "Average Unit Size", "Unit SF", "Typical Unit", individual unit square footages
-   - Example: If document says "718 SF average unit" and "14,360 SF total building", use 14,360
+   - Example: If document says "850 SF average unit" and "25,500 SF total building", use 25,500
 20. FINANCIAL METRIC VARIATIONS - Map these common variations to standard fields:
    - levered_irr: "Levered IRR", "LP IRR", "Projected LP IRR, Net", "Net IRR", "IRR to Equity"
    - unlevered_irr: "Unlevered IRR", "Gross IRR", "Projected IRR, Gross", "Project Level IRR"
