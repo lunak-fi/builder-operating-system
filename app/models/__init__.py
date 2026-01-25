@@ -4,6 +4,7 @@ from .deal import Deal
 from .deal_operator import DealOperator
 from .deal_document import DealDocument
 from .deal_underwriting import DealUnderwriting
+from .deal_stage_transition import DealStageTransition
 from .memo import Memo
 
-__all__ = ["Operator", "Principal", "Deal", "DealOperator", "DealDocument", "DealUnderwriting", "Memo"]
+__all__ = ["Operator", "Principal", "Deal", "DealOperator", "DealDocument", "DealUnderwriting", "DealStageTransition", "Memo"]

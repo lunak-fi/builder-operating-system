@@ -15,6 +15,7 @@ class DealUnderwritingBase(BaseModel):
     soft_cost: Decimal | None = None
     loan_amount: Decimal | None = None
     equity_required: Decimal | None = None
+    our_investment: Decimal | None = None
     interest_rate: Decimal | None = None
     ltv: Decimal | None = None
     ltc: Decimal | None = None
@@ -43,6 +44,7 @@ class DealUnderwritingUpdate(BaseModel):
     soft_cost: Decimal | None = None
     loan_amount: Decimal | None = None
     equity_required: Decimal | None = None
+    our_investment: Decimal | None = None
     interest_rate: Decimal | None = None
     ltv: Decimal | None = None
     ltc: Decimal | None = None

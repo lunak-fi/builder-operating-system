@@ -27,6 +27,7 @@ class DealUnderwriting(Base):
     soft_cost: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     loan_amount: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     equity_required: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
+    our_investment: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     interest_rate: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     ltv: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     ltc: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)

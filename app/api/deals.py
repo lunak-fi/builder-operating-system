@@ -2,12 +2,36 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
+from datetime import datetime
 
 from app.db.session import get_db
-from app.models import Deal, DealOperator, Operator
+from app.models import Deal, DealOperator, Operator, DealStageTransition
 from app.schemas import DealCreate, DealUpdate, DealResponse, AddOperatorRequest, UpdateOperatorRequest, DealOperatorResponse
 
 router = APIRouter(prefix="/deals", tags=["deals"])
+
+# Stage order for velocity calculations
+STAGE_ORDER = [
+    "inbox",
+    "pending",
+    "screening",
+    "under_review",
+    "due_diligence",
+    "term_sheet",
+    "committed"
+]
+
+
+def record_stage_transition(db: Session, deal_id: UUID, from_stage: str | None, to_stage: str):
+    """Helper function to record a stage transition"""
+    transition = DealStageTransition(
+        deal_id=deal_id,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        transitioned_at=datetime.now()
+    )
+    db.add(transition)
+    db.flush()  # Flush but don't commit (let caller commit)
 
 
 @router.post("/", response_model=DealResponse, status_code=201)
@@ -46,6 +70,83 @@ def list_deals(
     return deals
 
 
+@router.get("/velocity-metrics")
+def get_velocity_metrics(db: Session = Depends(get_db)):
+    """
+    Calculate pipeline velocity metrics:
+    - Average days in each stage
+    - Conversion rates between stages
+    """
+    from sqlalchemy import func
+    from datetime import timedelta
+
+    # Get all stage transitions
+    transitions = db.query(DealStageTransition).order_by(
+        DealStageTransition.deal_id,
+        DealStageTransition.transitioned_at
+    ).all()
+
+    # Group transitions by deal
+    deals_transitions = {}
+    for transition in transitions:
+        deal_id = str(transition.deal_id)
+        if deal_id not in deals_transitions:
+            deals_transitions[deal_id] = []
+        deals_transitions[deal_id].append(transition)
+
+    # Calculate metrics for each stage
+    stage_metrics = {}
+    for stage in STAGE_ORDER:
+        stage_metrics[stage] = {
+            "average_days": 0,
+            "total_entered": 0,
+            "moved_forward": 0,
+            "passed": 0,
+            "conversion_rate": 0
+        }
+
+    # Process each deal's transitions
+    for deal_id, deal_transitions in deals_transitions.items():
+        for i in range(len(deal_transitions)):
+            current = deal_transitions[i]
+            stage = current.to_stage
+
+            if stage not in stage_metrics:
+                continue
+
+            stage_metrics[stage]["total_entered"] += 1
+
+            # Calculate days in this stage
+            if i + 1 < len(deal_transitions):
+                next_transition = deal_transitions[i + 1]
+                days_in_stage = (next_transition.transitioned_at - current.transitioned_at).days
+                stage_metrics[stage]["average_days"] += days_in_stage
+
+                # Track where they went next
+                if next_transition.to_stage == "passed":
+                    stage_metrics[stage]["passed"] += 1
+                else:
+                    stage_metrics[stage]["moved_forward"] += 1
+
+    # Calculate averages and conversion rates
+    result = []
+    for stage in STAGE_ORDER:
+        metrics = stage_metrics[stage]
+        if metrics["total_entered"] > 0:
+            avg_days = metrics["average_days"] / metrics["total_entered"]
+            exits = metrics["moved_forward"] + metrics["passed"]
+            conversion = (metrics["moved_forward"] / exits * 100) if exits > 0 else 0
+
+            result.append({
+                "stage": stage,
+                "average_days": round(avg_days, 1),
+                "total_entered": metrics["total_entered"],
+                "conversion_rate": round(conversion, 1)
+            })
+
+    return {"stages": result}
+
+
 @router.get("/{deal_id}", response_model=DealResponse)
 def get_deal(deal_id: UUID, db: Session = Depends(get_db)):
     """Get a specific deal by ID"""
@@ -66,9 +167,16 @@ def update_deal(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
+    # Track status change for stage transition
+    old_status = deal.status
     update_data = deal_update.model_dump(exclude_unset=True)
+
     for field, value in update_data.items():
         setattr(deal, field, value)
+
+    # Record stage transition if status changed
+    if 'status' in update_data and update_data['status'] != old_status:
+        record_stage_transition(db, deal_id, old_status, update_data['status'])
 
     db.commit()
     db.refresh(deal)
@@ -105,6 +213,9 @@ def move_deal_to_next_stage(deal_id: UUID, db: Session = Depends(get_db)):
             detail=f"Cannot move deal forward from status: {current_status}"
         )
 
+    # Record stage transition
+    record_stage_transition(db, deal_id, current_status, next_status)
+
     deal.status = next_status
     db.commit()
     db.refresh(deal)
@@ -119,6 +230,10 @@ def pass_deal(deal_id: UUID, db: Session = Depends(get_db)):
     deal = db.query(Deal).filter(Deal.id == deal_id).first()
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
+
+    # Record stage transition
+    old_status = deal.status
+    record_stage_transition(db, deal_id, old_status, DealStatus.PASSED)
 
     deal.status = DealStatus.PASSED
     db.commit()
