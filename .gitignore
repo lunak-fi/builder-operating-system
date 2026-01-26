@@ -35,3 +35,4 @@ app/data/msa_boundaries/
 
 # Node.js
 node_modules/
+tasks/
