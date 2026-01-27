@@ -244,7 +244,7 @@ def parse_document(file_path: str, file_type: str) -> Tuple[str, dict]:
         DocumentParserError: If parsing fails
     """
     # Import PDF extractor here to avoid circular imports
-    from app.services.pdf_extractor import extract_text_from_pdf, PDFExtractionError
+    from app.services.pdf_extractor import extract_text_with_metadata, PDFExtractionError
 
     try:
         file_extension = Path(file_path).suffix.lower()
@@ -252,9 +252,14 @@ def parse_document(file_path: str, file_type: str) -> Tuple[str, dict]:
         # PDF
         if file_type == 'offer_memo' or file_extension == '.pdf':
             try:
-                text = extract_text_from_pdf(file_path)
-                file_size = Path(file_path).stat().st_size
-                metadata = {"file_type": "pdf", "file_size_bytes": file_size}
+                result = extract_text_with_metadata(file_path)
+                text = result["text"]
+                metadata = {
+                    "file_type": "pdf",
+                    "file_size_bytes": result["file_size_bytes"],
+                    "page_count": result["page_count"],
+                    "has_images": result["has_images"]
+                }
                 return text, metadata
             except PDFExtractionError as e:
                 raise DocumentParserError(f"PDF parsing failed: {str(e)}")

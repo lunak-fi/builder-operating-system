@@ -1,7 +1,11 @@
 import pdfplumber
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
+from pdf2image import convert_from_path
+from PIL import Image
+import io
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -123,3 +127,126 @@ def extract_text_with_metadata(file_path: str) -> dict:
             "has_images": False,
             "error": f"Unexpected error: {str(e)}"
         }
+
+
+def extract_key_pages_as_images(
+    pdf_path: str,
+    page_numbers: List[int] = None,
+    max_pages: int = 4,
+    max_width: int = 1536
+) -> List[Tuple[int, str, str]]:
+    """
+    Extract specific PDF pages as base64-encoded images.
+
+    Args:
+        pdf_path: Path to PDF file
+        page_numbers: Specific pages to extract (1-indexed). If None, extracts first max_pages
+        max_pages: Maximum number of pages to extract
+        max_width: Max width in pixels (images are downscaled to save tokens)
+
+    Returns:
+        List of tuples: [(page_num, media_type, base64_data), ...]
+
+    Raises:
+        PDFExtractionError: If image extraction fails
+    """
+    try:
+        if not Path(pdf_path).exists():
+            raise PDFExtractionError(f"File not found: {pdf_path}")
+
+        logger.info(f"Converting PDF pages to images: {pdf_path}")
+
+        # Convert PDF pages to PIL images
+        # DPI 150 is good balance between quality and size
+        images = convert_from_path(
+            pdf_path,
+            dpi=150,
+            fmt='png',
+            thread_count=2
+        )
+
+        # Determine which pages to extract
+        if page_numbers is None:
+            # Default: first N pages (usually cover + summary pages)
+            page_numbers = list(range(1, min(len(images) + 1, max_pages + 1)))
+
+        # Limit to max_pages
+        page_numbers = page_numbers[:max_pages]
+
+        result = []
+        for page_num in page_numbers:
+            if page_num < 1 or page_num > len(images):
+                logger.warning(f"Page {page_num} out of range (1-{len(images)})")
+                continue
+
+            # Get image (0-indexed)
+            img = images[page_num - 1]
+
+            # Downscale if needed to save tokens
+            if img.width > max_width:
+                ratio = max_width / img.width
+                new_height = int(img.height * ratio)
+                img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+                logger.info(f"Downscaled page {page_num} to {max_width}x{new_height}")
+
+            # Convert to PNG bytes
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format='PNG', optimize=True)
+            img_bytes.seek(0)
+
+            # Base64 encode
+            img_base64 = base64.b64encode(img_bytes.read()).decode('utf-8')
+
+            result.append((page_num, "image/png", img_base64))
+            logger.info(f"Extracted page {page_num} as image ({len(img_base64)} base64 chars)")
+
+        if not result:
+            raise PDFExtractionError("No pages could be converted to images")
+
+        return result
+
+    except Exception as e:
+        if isinstance(e, PDFExtractionError):
+            raise
+        raise PDFExtractionError(f"Image extraction failed: {str(e)}")
+
+
+def identify_financial_pages(pdf_text: str, total_pages: int) -> List[int]:
+    """
+    Identify which pages likely contain financial metrics based on text keywords.
+
+    Args:
+        pdf_text: Extracted text with page markers
+        total_pages: Total number of pages in PDF
+
+    Returns:
+        List of page numbers (1-indexed) likely containing financial data
+    """
+    # Split by page markers
+    pages = pdf_text.split("--- Page ")
+
+    financial_keywords = [
+        'irr', 'equity multiple', 'moic', 'dscr', 'cap rate',
+        'returns', 'projections', 'capitalization', 'underwriting',
+        'financial summary', 'investment highlights'
+    ]
+
+    financial_pages = set()
+
+    for i, page_text in enumerate(pages[1:], start=1):  # Skip first split (before any page)
+        page_text_lower = page_text.lower()
+
+        # Check for financial keywords
+        keyword_count = sum(1 for kw in financial_keywords if kw in page_text_lower)
+
+        if keyword_count >= 2:  # At least 2 financial keywords
+            financial_pages.add(i)
+
+    # Always include page 1 (cover/summary)
+    financial_pages.add(1)
+
+    # Sort and return
+    result = sorted(list(financial_pages))
+    logger.info(f"Identified financial pages: {result}")
+
+    return result
