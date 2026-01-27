@@ -60,11 +60,8 @@ def generate_memo_for_deal(deal_id: UUID, db: Session) -> Memo:
         # Build context for AI generation
         context = _build_deal_context(deal, operator, underwriting, documents, transcripts)
 
-        # Get latest document text for additional context
-        document_text = ""
-        if documents and documents[0].parsed_text:
-            # Use first 10k characters of latest document
-            document_text = documents[0].parsed_text[:10000]
+        # Build document text from ALL documents, prioritized by source type
+        document_text = _build_document_text(documents, transcripts)
 
         # Generate memo content using Claude API
         logger.info(f"Generating memo for deal {deal_id} (status: {deal.status})")
@@ -196,6 +193,77 @@ def _build_deal_context(
     return context
 
 
+# Priority order for document types: sponsor materials first, internal last
+_DOC_TYPE_PRIORITY = {
+    "offer_memo": 0,      # Sponsor-provided pitch materials
+    "financial_model": 1,  # Sponsor-provided financials
+    "email": 2,            # Correspondence (may be sponsor or internal)
+    "transcript": 3,       # Internal conversations (already handled separately via ai_insights)
+}
+
+
+def _build_document_text(documents: list, transcripts: list, char_budget: int = 15000) -> str:
+    """
+    Build labeled document text from all documents, prioritized by type.
+
+    Sponsor materials (offer memos, financial models) get the most space.
+    Transcripts are deprioritized since their insights are already extracted separately.
+    Each section is labeled with document type and date for AI context.
+    """
+    # Exclude transcripts from document text since they're handled via ai_insights
+    transcript_ids = {t.id for t in transcripts}
+    non_transcript_docs = [d for d in documents if d.id not in transcript_ids]
+
+    # Sort by type priority, then by date (newest first)
+    non_transcript_docs.sort(
+        key=lambda d: (
+            _DOC_TYPE_PRIORITY.get(d.document_type, 99),
+            -(d.document_date or d.created_at).timestamp()
+        )
+    )
+
+    sections = []
+    remaining = char_budget
+
+    for doc in non_transcript_docs:
+        if remaining <= 0:
+            break
+        if not doc.parsed_text:
+            continue
+
+        # Build label
+        type_label = {
+            "offer_memo": "Offer Memo / Pitch Book",
+            "financial_model": "Financial Model",
+            "email": "Email Correspondence",
+        }.get(doc.document_type, doc.document_type.replace("_", " ").title())
+
+        date_str = ""
+        if doc.document_date:
+            date_str = doc.document_date.strftime("%Y-%m-%d")
+        elif doc.created_at:
+            date_str = doc.created_at.strftime("%Y-%m-%d")
+
+        header = f"[{type_label} - {date_str}] {doc.file_name}"
+
+        # Allocate space: give more to higher-priority docs
+        # First doc gets up to 8K, subsequent docs share the rest
+        if not sections:
+            alloc = min(8000, remaining)
+        else:
+            alloc = min(4000, remaining)
+
+        text_chunk = doc.parsed_text[:alloc]
+        section = f"--- {header} ---\n{text_chunk}"
+        sections.append(section)
+        remaining -= len(section)
+
+    if not sections:
+        return "No document text available"
+
+    return "\n\n".join(sections)
+
+
 def _generate_memo_content(context: Dict[str, Any], document_text: str, deal_status: str) -> str:
     """Call Claude API to generate memo content"""
 
@@ -295,8 +363,8 @@ Underwriting Metrics (As Committed):
 - DSCR at Stabilization (Projected): {context['dscr_at_stabilization'] or 'Not provided'}
 - Hold Period: {context['hold_period_years'] or 'Not provided'} years
 
-LATEST UPDATE DOCUMENT:
-{document_text[:10000] if document_text else 'No recent update available'}
+DEAL DOCUMENTS (sponsor materials and correspondence, labeled by type and date):
+{document_text}
 
 CONVERSATION TRANSCRIPTS ({len(context['transcript_summaries'])} transcripts):
 {_format_transcript_summaries(context['transcript_summaries']) if context['has_transcripts'] else 'No conversation transcripts available'}
@@ -312,6 +380,12 @@ AGGREGATED INSIGHTS FROM TRANSCRIPTS:
 {_format_list_items(context['all_risks_from_transcripts'][:5], prefix='  • ') if context['all_risks_from_transcripts'] else '  (None)'}
 
 ---
+
+SOURCE PRIORITIZATION:
+- Sponsor-provided materials (Offer Memos, Financial Models) are the PRIMARY source of truth for project status, financials, and business plan details. Weight these most heavily.
+- Email correspondence provides context on communications and updates between parties.
+- Conversation transcripts and their extracted insights (above) are useful for identifying internal concerns, risks discussed, and action items — but may reflect preliminary or speculative internal discussion rather than confirmed facts.
+- When sponsor materials and internal discussions conflict, note the discrepancy rather than choosing one.
 
 INSTRUCTIONS:
 
@@ -424,8 +498,8 @@ Financial Metrics:
 
 Missing Data Points: {', '.join(context['missing_fields']) if context['missing_fields'] else 'None'}
 
-DOCUMENT EXCERPT (First 10k chars):
-{document_text[:10000] if document_text else 'No document text available'}
+DEAL DOCUMENTS (sponsor materials and correspondence, labeled by type and date):
+{document_text}
 
 CONVERSATION TRANSCRIPTS ({len(context['transcript_summaries'])} transcripts):
 {_format_transcript_summaries(context['transcript_summaries']) if context['has_transcripts'] else 'No conversation transcripts available'}
@@ -442,20 +516,32 @@ AGGREGATED INSIGHTS FROM TRANSCRIPTS:
 
 ---
 
+SOURCE PRIORITIZATION:
+- Sponsor-provided materials (Offer Memos, Financial Models) are the PRIMARY source of truth for deal structure, financials, and business plan details. Weight these most heavily when building the Investment Thesis.
+- Email correspondence provides context on communications and negotiations.
+- Conversation transcripts and their extracted insights (above) are valuable for identifying internal concerns, risks, and due diligence gaps — but may reflect preliminary or speculative internal discussion rather than confirmed facts. Use these primarily for the Key Risks and Open Questions sections.
+- When sponsor materials and internal discussions conflict, note the discrepancy rather than choosing one.
+
 INSTRUCTIONS:
 
 Generate a professional investment memo with EXACTLY these five sections:
 
 ## Investment Thesis
 
-Write 2-4 compelling bullet points that explain the VALUE CREATION strategy. Focus on:
-- Specific opportunities for value add (not generic statements)
-- Market dynamics that support the thesis
-- Sponsor's edge or competitive advantage
-- Why THIS deal at THIS time makes sense
-- Reference specific numbers from the financials when possible
+IMPORTANT: The sponsor's business plan summary is already displayed separately to the reader. Do NOT restate or summarize it.
 
-Use markdown bullet points with bold key phrases.
+Start with ONE concise sentence (not a bullet) that captures the core investment opportunity in plain language — e.g. "Distressed retail acquisition at a deep discount in an affluent NJ market, with repositioning upside." This sentence will be displayed as a headline preview.
+
+Then on a new paragraph, write 3-5 analytical bullet points that ASSESS the thesis (not repeat it):
+- How do the financial metrics (IRR, equity multiple, cap rates, leverage) compare to typical {context['strategy']} deals? Are the return projections aggressive, conservative, or in-line?
+- What assumptions must hold true for the thesis to work?
+- What market conditions or execution milestones are critical to achieving the projected returns?
+- Does the sponsor's background align with this specific strategy and market?
+- What is the margin of safety — how much can go wrong before returns become unacceptable?
+
+Be direct and analytical. Use specific numbers from the deal data. State where assumptions appear aggressive or where data is insufficient to evaluate.
+
+Use markdown bullet points with bold key phrases for the analytical bullets.
 
 ## Key Risks
 
