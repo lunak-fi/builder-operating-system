@@ -4,9 +4,11 @@
   "description": "Builder OS - Python backend with Node.js tooling for task sync",
   "private": true,
   "scripts": {
-    "sync-tasks": "tsx scripts/sync-kanban.ts"
+    "sync-tasks": "tsx scripts/sync-kanban.ts",
+    "watch-tasks": "tsx scripts/watch-kanban.ts"
   },
   "devDependencies": {
+    "chokidar": "^4.0.3",
     "tsx": "^4.7.0"
   }
 }

@@ -430,7 +430,7 @@ async function syncToObsidian(kanbanContent: string): Promise<void> {
 // Main Execution
 // ============================================================================
 
-async function main() {
+export async function main() {
   try {
     console.log('🔄 Starting Obsidian Kanban sync...\n');
 
