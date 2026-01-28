@@ -393,7 +393,9 @@ Generate a portfolio monitoring memo with EXACTLY these five sections:
 
 ## Execution Status
 
-Write 3-5 bullet points that summarize WHERE WE ARE in the business plan execution. Focus on:
+Start with ONE concise sentence (not a bullet) that captures the current status of the deal — e.g. "Project is in active lease-up with 72% occupancy, tracking ahead of underwritten schedule." This sentence will be displayed as a headline preview.
+
+Then on a new paragraph, write 3-5 bullet points that summarize WHERE WE ARE in the business plan execution. Focus on:
 - Current phase of the project (e.g., construction 60% complete, lease-up phase, stabilized, etc.)
 - Key milestones achieved or missed since commitment
 - Timeline updates or changes from original plan
