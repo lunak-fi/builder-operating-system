@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import engine
 from app.db.base import Base
+from app.auth import require_auth
 
 # Import routers
 from app.api import operators, deals, principals, documents, underwriting, memos
@@ -42,13 +43,14 @@ def on_startup():
     # Base.metadata.create_all(bind=engine)
 
 
-# Include routers
-app.include_router(operators.router, prefix="/api")
-app.include_router(deals.router, prefix="/api")
-app.include_router(principals.router, prefix="/api")
-app.include_router(documents.router, prefix="/api")
-app.include_router(underwriting.router, prefix="/api")
-app.include_router(memos.router, prefix="/api")
+# Include routers - all require authentication
+auth_deps = [Depends(require_auth)]
+app.include_router(operators.router, prefix="/api", dependencies=auth_deps)
+app.include_router(deals.router, prefix="/api", dependencies=auth_deps)
+app.include_router(principals.router, prefix="/api", dependencies=auth_deps)
+app.include_router(documents.router, prefix="/api", dependencies=auth_deps)
+app.include_router(underwriting.router, prefix="/api", dependencies=auth_deps)
+app.include_router(memos.router, prefix="/api", dependencies=auth_deps)
 
 
 @app.get("/")
