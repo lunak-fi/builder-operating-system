@@ -22,6 +22,8 @@ app.add_middleware(
         "http://localhost:3000",
         "https://builder-operating-system-ui.vercel.app",
         "https://builder-operating-system-ui-*.vercel.app",  # Allow preview deployments
+        "https://buildingpartnership.co",
+        "https://www.buildingpartnership.co",
     ],
     allow_credentials=True,
     allow_methods=["*"],
