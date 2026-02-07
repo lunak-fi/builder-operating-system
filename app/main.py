@@ -5,7 +5,7 @@ from app.db.base import Base
 from app.auth import require_auth
 
 # Import routers
-from app.api import operators, deals, principals, documents, underwriting, memos, webhooks
+from app.api import operators, deals, principals, documents, underwriting, memos, webhooks, deal_notes
 
 app = FastAPI(
     title="Builder Operating System",
@@ -53,6 +53,7 @@ app.include_router(principals.router, prefix="/api", dependencies=auth_deps)
 app.include_router(documents.router, prefix="/api", dependencies=auth_deps)
 app.include_router(underwriting.router, prefix="/api", dependencies=auth_deps)
 app.include_router(memos.router, prefix="/api", dependencies=auth_deps)
+app.include_router(deal_notes.router, prefix="/api", dependencies=auth_deps)
 
 # Webhook routes - NO authentication (external services can't provide JWT)
 # Security is handled via webhook signature verification

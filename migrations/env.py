@@ -10,7 +10,7 @@ from app.db.database import settings
 from app.db.base import Base
 
 # Import all models so Alembic can detect them
-from app.models import Operator, Principal, Deal, DealDocument, DealUnderwriting, Memo
+from app.models import Operator, Principal, Deal, DealDocument, DealUnderwriting, Memo, DealNote
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

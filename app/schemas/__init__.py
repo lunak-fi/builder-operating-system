@@ -6,6 +6,7 @@ from .deal_document import DealDocumentCreate, DealDocumentUpdate, DealDocumentR
 from .deal_underwriting import DealUnderwritingCreate, DealUnderwritingUpdate, DealUnderwritingResponse
 from .memo import MemoCreate, MemoUpdate, MemoResponse
 from .activity import ActivityItem, ActivityFeedResponse
+from .deal_note import DealNoteCreate, DealNoteUpdate, DealNoteResponse, ThreadExtractionRequest, ThreadExtractionResponse
 
 __all__ = [
     "OperatorCreate",
@@ -31,4 +32,9 @@ __all__ = [
     "MemoResponse",
     "ActivityItem",
     "ActivityFeedResponse",
+    "DealNoteCreate",
+    "DealNoteUpdate",
+    "DealNoteResponse",
+    "ThreadExtractionRequest",
+    "ThreadExtractionResponse",
 ]

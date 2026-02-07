@@ -90,6 +90,9 @@ class Deal(Base):
     stage_transitions: Mapped[list["DealStageTransition"]] = relationship(
         "DealStageTransition", back_populates="deal", cascade="all, delete-orphan"
     )
+    notes: Mapped[list["DealNote"]] = relationship(
+        "DealNote", back_populates="deal", cascade="all, delete-orphan"
+    )
 
     # Helper properties for multiple operators
     @property
