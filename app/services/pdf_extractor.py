@@ -213,7 +213,7 @@ def extract_key_pages_as_images(
 
 def identify_financial_pages(pdf_text: str, total_pages: int) -> List[int]:
     """
-    Identify which pages likely contain financial metrics based on text keywords.
+    Identify which pages likely contain financial metrics based on section headers and keywords.
 
     Args:
         pdf_text: Extracted text with page markers
@@ -225,28 +225,48 @@ def identify_financial_pages(pdf_text: str, total_pages: int) -> List[int]:
     # Split by page markers
     pages = pdf_text.split("--- Page ")
 
-    financial_keywords = [
-        'irr', 'equity multiple', 'moic', 'dscr', 'cap rate',
-        'returns', 'projections', 'capitalization', 'underwriting',
-        'financial summary', 'investment highlights'
+    # Priority headers - pages with these titles are almost certainly key pages
+    # These typically appear at the top of the page or as section headers
+    priority_headers = [
+        'financial summary', 'deal metrics', 'investment summary',
+        'financial analysis', 'sources and uses', 'sources & uses',
+        'project summary', 'capital stack', 'investment highlights',
+        'key metrics', 'projected returns', 'underwriting summary'
     ]
 
-    financial_pages = set()
+    # Secondary keywords - need multiple matches to qualify
+    secondary_keywords = [
+        'irr', 'equity multiple', 'moic', 'dscr', 'cap rate',
+        'total raise', 'sponsor equity', 'lp equity',
+        'purchase price', 'acquisition price', 'total cost',
+        'cash flow', 'proforma', 'pro forma', 'noi', 'yield'
+    ]
+
+    priority_pages = set()
+    secondary_pages = set()
 
     for i, page_text in enumerate(pages[1:], start=1):  # Skip first split (before any page)
         page_text_lower = page_text.lower()
 
-        # Check for financial keywords
-        keyword_count = sum(1 for kw in financial_keywords if kw in page_text_lower)
+        # Check for priority headers (single match = high confidence)
+        for header in priority_headers:
+            if header in page_text_lower:
+                priority_pages.add(i)
+                logger.info(f"Page {i} matched priority header: '{header}'")
+                break
 
-        if keyword_count >= 2:  # At least 2 financial keywords
-            financial_pages.add(i)
+        # Check for secondary keywords (need 2+ matches)
+        if i not in priority_pages:
+            keyword_count = sum(1 for kw in secondary_keywords if kw in page_text_lower)
+            if keyword_count >= 2:
+                secondary_pages.add(i)
 
     # Always include page 1 (cover/summary)
-    financial_pages.add(1)
+    priority_pages.add(1)
 
-    # Sort and return
-    result = sorted(list(financial_pages))
-    logger.info(f"Identified financial pages: {result}")
+    # Combine: priority pages first, then secondary pages
+    result = sorted(list(priority_pages)) + sorted(list(secondary_pages - priority_pages))
+
+    logger.info(f"Identified financial pages: {result} (priority: {sorted(priority_pages)}, secondary: {sorted(secondary_pages)})")
 
     return result

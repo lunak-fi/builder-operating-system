@@ -144,7 +144,7 @@ def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> D
     optional_fields = [
         "country", "state", "msa", "submarket", "address_line1", "postal_code",
         "asset_type", "strategy_type", "num_units", "year_built",
-        "business_plan_summary", "hold_period_years"
+        "business_plan_summary", "hold_period_years", "asset_type_details"
     ]
 
     for field in optional_fields:

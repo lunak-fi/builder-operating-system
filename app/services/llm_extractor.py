@@ -114,12 +114,12 @@ def extract_deal_data_from_vision(
                 total_pages = len(pdf.pages)
             page_numbers = identify_financial_pages(text_fallback, total_pages)
 
-        # Extract key pages as images (limit to 4 pages max)
+        # Extract key pages as images (limit to 6 pages max)
         logger.info(f"Extracting PDF pages as images: {pdf_path}")
         images = extract_key_pages_as_images(
             pdf_path,
             page_numbers=page_numbers,
-            max_pages=4,
+            max_pages=6,  # Increased from 4 to capture more key pages
             max_width=1536  # Good balance between quality and tokens
         )
 
@@ -248,15 +248,16 @@ Please extract the following information and return it as valid JSON:
     "state": "State where property is located (optional)",
     "msa": "Metropolitan Statistical Area (optional)",
     "submarket": "Submarket name (optional)",
-    "address_line1": "Street address (optional)",
+    "address_line1": "Street address - USE THE ADDRESS FROM THE COVER PAGE/TITLE, NOT from case studies (optional)",
     "postal_code": "Zip/postal code (optional)",
-    "asset_type": "Asset type: Multifamily, Office, Retail, Industrial, etc. (optional)",
+    "asset_type": "Asset type: Multifamily, Office, Retail, Industrial, Mixed-Use, etc. - see ASSET TYPE CLASSIFICATION rules below (required if determinable)",
     "strategy_type": "Investment strategy: Value-Add, Core, Core-Plus, Opportunistic, Development, etc. (optional)",
     "num_units": "Number of units (integer, optional)",
     "building_sf": "Building square footage (numeric, optional)",
     "year_built": "Year built (integer, optional)",
     "business_plan_summary": "Brief summary of business plan (optional)",
-    "hold_period_years": "Expected hold period in years (integer, optional)"
+    "hold_period_years": "Expected hold period in years (integer, optional)",
+    "asset_type_details": "Asset-type-specific fields - see ASSET TYPE DETAILS section below (optional object)"
   }},
   "principals": [
     {{
@@ -323,7 +324,8 @@ IMPORTANT INSTRUCTIONS:
    - "Underwriting Assumptions" pages (often middle or end of deck)
    Search ALL these sections thoroughly before concluding a metric is not present.
 19. SQUARE FOOTAGE DISAMBIGUATION - For "building_sf", extract TOTAL PROPERTY square footage:
-   - Look for: "Total SF", "Building Size", "Gross Building Area", "Rentable SF", "Total Square Feet", "Area"
+   - Look for: "Total SF", "Building Size", "Gross Building Area", "Rentable SF", "Total Square Feet", "Area", "GLA", "Gross Leasable Area", "NRA", "Net Rentable Area"
+   - For retail: "GLA" (Gross Leasable Area) is the standard measure
    - DO NOT use: "Average Unit Size", "Unit SF", "Typical Unit", individual unit square footages
    - Example: If document says "850 SF average unit" and "25,500 SF total building", use 25,500
 20. FINANCIAL METRIC VARIATIONS - Map these common variations to standard fields:
@@ -342,13 +344,104 @@ IMPORTANT INSTRUCTIONS:
    - total_project_cost or land_cost (Acquisition/Purchase Price)
    - equity_required (Equity/LP Equity)
 22. PRIMARY DEAL FOCUS - CRITICAL: Extract data for the PRIMARY investment opportunity being offered:
-   - IGNORE sections titled: "Track Record", "Case Studies", "Past Performance", "Realized Deals", "Portfolio History", "Success Stories", "Prior Investments"
-   - The PRIMARY deal is usually featured prominently on the cover page and has detailed financial projections
-   - Case studies are HISTORICAL deals already completed - do NOT extract these
-   - If multiple properties are mentioned, extract the one being OFFERED FOR INVESTMENT (usually the first/main property)
-   - Look for phrases like "Investment Opportunity", "Offering", "Current Deal", "Target Property"
-   - The primary deal typically has forward-looking projections (hold period, exit strategy)
-   - Case studies typically show historical returns and sale dates in the past
+   - The deal name and address are almost ALWAYS on the COVER PAGE (page 1) or in the title
+   - If the document title or cover page says "100 N 3rd Street", that IS the deal address - use it
+   - IGNORE ALL sections titled: "Track Record", "Case Studies", "Case Study", "Past Performance", "Realized Deals", "Realized Case Study", "Portfolio History", "Success Stories", "Prior Investments", "Sold", "Exited"
+   - Case studies are HISTORICAL deals already completed - do NOT extract addresses, units, or metrics from these
+   - The PRIMARY deal is featured in the FIRST HALF of the document (pages 1-6 typically)
+   - Case studies/track records are usually in the SECOND HALF of the document (pages 7+)
+   - If you see "(Sold)" or "Realized" next to a property name, that is NOT the current deal
+   - Look for phrases like "Investment Opportunity", "Offering", "Current Deal", "Target Property" to identify the primary deal
+   - The primary deal has FORWARD-LOOKING projections (target IRR, hold period, business plan)
+   - Case studies show HISTORICAL returns and past sale dates
+
+23. ASSET TYPE CLASSIFICATION - Use these rules to determine the correct asset_type:
+   - **Retail**: Single-tenant or multi-tenant retail properties (stores, restaurants, shopping centers)
+     - "Retail Condo" = Retail (NOT Mixed-Use)
+     - "Strip Center" = Retail
+     - "Shopping Center" = Retail
+   - **Multifamily**: Apartment buildings, residential rental properties
+   - **Office**: Office buildings (Class A, B, C)
+   - **Industrial**: Warehouses, distribution centers, manufacturing facilities
+   - **Mixed-Use**: ONLY when a SINGLE property contains MULTIPLE DISTINCT use types
+     - Example: Ground-floor retail + upper-floor apartments = Mixed-Use
+     - Example: Retail + Office in same building = Mixed-Use
+     - A standalone retail building is NOT Mixed-Use, even if called a "condo"
+   - When in doubt, use the SIMPLER classification (Retail, not Mixed-Use)
+
+24. ASSET TYPE DETAILS - Based on the detected asset_type, include relevant fields in asset_type_details:
+
+   For MULTIFAMILY:
+   {{
+     "unit_mix": [
+       {{"type": "Studio", "count": 10, "avg_sf": 450, "avg_rent": 1200}},
+       {{"type": "1BR", "count": 50, "avg_sf": 700, "avg_rent": 1500}},
+       {{"type": "2BR", "count": 40, "avg_sf": 950, "avg_rent": 1900}}
+     ],
+     "avg_unit_sf": "Average unit square footage (numeric)",
+     "avg_rent_per_unit": "Average monthly rent per unit (numeric)",
+     "rent_per_sf": "Rent per square foot per month (numeric)",
+     "occupancy_rate": "Current occupancy as decimal (e.g., 0.94 for 94%)",
+     "amenities": ["Pool", "Fitness Center", "Dog Park", "etc."]
+   }}
+
+   For RETAIL:
+   {{
+     "gla": "Gross Leasable Area in SF (numeric)",
+     "anchor_tenants": ["Tenant Name 1", "Tenant Name 2"],
+     "tenant_mix": [
+       {{"tenant": "Kroger", "sf": 50000, "lease_end": "2030", "rent_psf": 12.50}}
+     ],
+     "avg_lease_term_years": "Average remaining lease term (numeric)",
+     "occupancy_rate": "Current occupancy as decimal",
+     "parking_spaces": "Number of parking spaces (integer)",
+     "parking_ratio": "Parking ratio per 1,000 SF (numeric)",
+     "nnn_lease_percentage": "Percentage of NNN leases as decimal"
+   }}
+
+   For INDUSTRIAL:
+   {{
+     "clear_height_ft": "Clear height in feet (numeric)",
+     "dock_doors": "Number of dock-high doors (integer)",
+     "drive_in_doors": "Number of drive-in doors (integer)",
+     "yard_space_sf": "Exterior yard/trailer parking SF (numeric)",
+     "power_amps": "Available power in amps (integer)",
+     "sprinklered": "Whether building is sprinklered (boolean)",
+     "column_spacing": "Column spacing (e.g., '50x50')",
+     "crane_capacity_tons": "Crane capacity if present (numeric)",
+     "truck_court_depth_ft": "Truck court depth (numeric)",
+     "occupancy_rate": "Current occupancy as decimal"
+   }}
+
+   For OFFICE:
+   {{
+     "class": "Building class: A, B, or C",
+     "floor_plate_sf": "Typical floor plate size in SF (numeric)",
+     "floors": "Number of floors (integer)",
+     "parking_spaces": "Number of parking spaces (integer)",
+     "parking_ratio": "Parking ratio per 1,000 SF (numeric)",
+     "walt_years": "Weighted Average Lease Term in years (numeric)",
+     "occupancy_rate": "Current occupancy as decimal",
+     "major_tenants": ["Tenant 1", "Tenant 2"],
+     "amenities": ["Conference Center", "Fitness", "Cafe", "etc."]
+   }}
+
+   For MIXED-USE:
+   {{
+     "components": [
+       {{"type": "Retail", "sf": 15000, "units": null}},
+       {{"type": "Office", "sf": 45000, "units": null}},
+       {{"type": "Residential", "sf": 80000, "units": 100}}
+     ],
+     "residential_units": "Number of residential units if applicable (integer)",
+     "retail_sf": "Retail component SF (numeric)",
+     "office_sf": "Office component SF (numeric)",
+     "parking_spaces": "Total parking spaces (integer)",
+     "occupancy_rate": "Overall occupancy as decimal"
+   }}
+
+   IMPORTANT: Only include asset_type_details fields that are actually present in the document.
+   Do not guess or make up values. Use null for fields not found.
 
 Return only the JSON object, nothing else."""
 

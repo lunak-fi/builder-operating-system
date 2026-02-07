@@ -1,8 +1,9 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 from sqlalchemy import String, Text, DateTime, Integer, Numeric, ForeignKey, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 import uuid
 
 from app.db.base import Base
@@ -62,6 +63,7 @@ class Deal(Base):
     year_built: Mapped[int | None] = mapped_column(Integer, nullable=True)
     business_plan_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     hold_period_years: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
+    asset_type_details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="inbox")
     operator_needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(

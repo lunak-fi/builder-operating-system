@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
@@ -22,6 +22,16 @@ from app.services.llm_extractor import (
 )
 from app.services.excel_analyst import analyze_financial_model, ExcelAnalystError
 from app.services.auto_populate import populate_database_from_extraction, AutoPopulationError
+from app.services.email_parser import (
+    parse_sendgrid_webhook,
+    parse_mailgun_webhook,
+    format_email_as_text,
+    get_email_metadata,
+    extract_deal_code_from_address,
+    extract_deal_code_from_subject,
+    EmailParserError,
+    ParsedEmail
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1069,3 +1079,222 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db)):
     db.delete(document)
     db.commit()
     return None
+
+
+# =============================================================================
+# INBOUND EMAIL WEBHOOK
+# =============================================================================
+
+class InboundEmailResponse(BaseModel):
+    """Response for inbound email processing"""
+    success: bool
+    document_id: str | None = None
+    deal_id: str | None = None
+    deal_code: str | None = None
+    message: str
+    attachment_document_ids: list[str] = []
+
+
+@router.post("/inbound-email", response_model=InboundEmailResponse)
+async def receive_inbound_email(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    # SendGrid fields (also works for Mailgun with mapping)
+    from_field: str = Form(None, alias="from"),
+    to: str = Form(None),
+    cc: str = Form(None),
+    subject: str = Form(None),
+    text: str = Form(None),
+    html: str = Form(None),
+    headers: str = Form(None),
+    attachments: int = Form(0),
+    # Provider hint (optional)
+    provider: str = Form("sendgrid"),
+):
+    """
+    Webhook endpoint for receiving forwarded emails.
+
+    Supports SendGrid Inbound Parse and Mailgun Routes.
+
+    Users forward emails to: deals+{deal_code}@your-domain.com
+    The deal_code is extracted and used to link the email to a deal.
+
+    If no deal code found in address, attempts to extract from subject line:
+    - [ABC123] Subject here
+    - Deal ABC123 - Update
+
+    Creates a DealDocument with type="email" and stores:
+    - Email body as parsed_text
+    - Email metadata (from, to, subject, date) in metadata_json
+    - Attachments as separate linked documents
+    """
+    from app.models import Deal
+
+    try:
+        # Build payload from form fields
+        form_data = await request.form()
+        payload = {
+            'from': from_field or form_data.get('from', ''),
+            'to': to or form_data.get('to', ''),
+            'cc': cc or form_data.get('cc', ''),
+            'subject': subject or form_data.get('subject', '(No Subject)'),
+            'text': text or form_data.get('text', '') or form_data.get('body-plain', ''),
+            'html': html or form_data.get('html', '') or form_data.get('body-html', ''),
+            'headers': headers or form_data.get('headers', '') or form_data.get('message-headers', ''),
+            'attachments': attachments or int(form_data.get('attachments', 0) or form_data.get('attachment-count', 0)),
+        }
+
+        # Copy attachment fields
+        for key in form_data.keys():
+            if key.startswith('attachment'):
+                payload[key] = form_data[key]
+
+        logger.info(f"Received inbound email: to={payload['to']}, subject={payload['subject']}")
+
+        # Parse email based on provider
+        if provider == "mailgun":
+            parsed_email = parse_mailgun_webhook(payload)
+        else:
+            parsed_email = parse_sendgrid_webhook(payload)
+
+        # Extract deal code from TO address first
+        deal_code = None
+        for addr in parsed_email.to_addresses:
+            deal_code = extract_deal_code_from_address(addr)
+            if deal_code:
+                logger.info(f"Extracted deal code from address: {deal_code}")
+                break
+
+        # If not found in address, try subject line
+        if not deal_code:
+            deal_code = extract_deal_code_from_subject(parsed_email.subject)
+            if deal_code:
+                logger.info(f"Extracted deal code from subject: {deal_code}")
+
+        # Find deal by internal_code
+        deal = None
+        if deal_code:
+            deal = db.query(Deal).filter(Deal.internal_code == deal_code).first()
+            if not deal:
+                # Try case-insensitive match
+                deal = db.query(Deal).filter(
+                    Deal.internal_code.ilike(deal_code)
+                ).first()
+
+            if deal:
+                logger.info(f"Matched email to deal: {deal.id} ({deal.deal_name})")
+            else:
+                logger.warning(f"No deal found for code: {deal_code}")
+
+        # Create upload directory
+        upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate unique filename for email
+        doc_uuid = uuid.uuid4()
+        safe_subject = re.sub(r'[^\w\s-]', '', parsed_email.subject)[:50]
+        email_filename = f"email_{safe_subject}_{doc_uuid}.txt"
+        file_path = upload_dir / f"{doc_uuid}_{email_filename}"
+
+        # Format email as text and save
+        email_text = format_email_as_text(parsed_email)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(email_text)
+
+        file_size = file_path.stat().st_size
+
+        # Get email metadata
+        email_metadata = get_email_metadata(parsed_email)
+
+        # Create DealDocument for email
+        db_document = DealDocument(
+            id=doc_uuid,
+            deal_id=deal.id if deal else None,
+            document_type="email",
+            file_name=email_filename,
+            file_url=str(file_path),
+            file_size=file_size,
+            parsed_text=email_text,
+            parsing_status="completed",
+            metadata_json=email_metadata,
+            document_date=parsed_email.date,
+            source_description=f"Forwarded email from {parsed_email.from_address}"
+        )
+
+        db.add(db_document)
+        db.commit()
+        db.refresh(db_document)
+
+        logger.info(f"Created email document: {db_document.id}")
+
+        # Process attachments
+        attachment_doc_ids = []
+        for attachment in parsed_email.attachments:
+            try:
+                att_uuid = uuid.uuid4()
+                att_filename = f"{att_uuid}_{attachment.filename}"
+                att_path = upload_dir / att_filename
+
+                # Save attachment file
+                with open(att_path, 'wb') as f:
+                    f.write(attachment.content)
+
+                # Determine document type from extension
+                file_ext = Path(attachment.filename).suffix.lower()
+                att_doc_type = ALLOWED_EXTENSIONS.get(file_ext, 'other')
+
+                # Create document record for attachment
+                att_document = DealDocument(
+                    id=att_uuid,
+                    deal_id=deal.id if deal else None,
+                    document_type=att_doc_type,
+                    file_name=attachment.filename,
+                    file_url=str(att_path),
+                    file_size=attachment.size,
+                    parsing_status="processing",
+                    source_description=f"Attachment from email: {parsed_email.subject}",
+                    document_date=parsed_email.date
+                )
+
+                db.add(att_document)
+                db.commit()
+                db.refresh(att_document)
+
+                attachment_doc_ids.append(str(att_document.id))
+
+                # Trigger background parsing for supported types
+                if att_doc_type in ['offer_memo', 'financial_model', 'transcript']:
+                    from app.db.database import SessionLocal
+                    background_tasks.add_task(
+                        process_document_parsing,
+                        att_document.id,
+                        str(att_path),
+                        att_doc_type,
+                        SessionLocal
+                    )
+                    logger.info(f"Scheduled parsing for attachment: {attachment.filename}")
+                else:
+                    # Mark as completed for unsupported types
+                    att_document.parsing_status = "completed"
+                    db.commit()
+
+            except Exception as e:
+                logger.error(f"Failed to process attachment {attachment.filename}: {str(e)}")
+                continue
+
+        return InboundEmailResponse(
+            success=True,
+            document_id=str(db_document.id),
+            deal_id=str(deal.id) if deal else None,
+            deal_code=deal_code,
+            message=f"Email processed successfully. {'Linked to deal.' if deal else 'No matching deal found - email saved as orphan document.'}",
+            attachment_document_ids=attachment_doc_ids
+        )
+
+    except EmailParserError as e:
+        logger.error(f"Email parsing failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Email parsing failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error processing inbound email: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process email: {str(e)}")

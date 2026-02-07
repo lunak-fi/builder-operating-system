@@ -25,6 +25,7 @@ class DealBase(BaseModel):
     year_built: int | None = None
     business_plan_summary: str | None = None
     hold_period_years: Decimal | None = None
+    asset_type_details: dict | None = None
     status: str = "inbox"
     operator_needs_review: bool = False
 
@@ -50,6 +51,7 @@ class DealUpdate(BaseModel):
     year_built: int | None = None
     business_plan_summary: str | None = None
     hold_period_years: Decimal | None = None
+    asset_type_details: dict | None = None
     status: str | None = None
     operator_needs_review: bool | None = None
 
