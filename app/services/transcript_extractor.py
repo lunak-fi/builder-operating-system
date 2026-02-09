@@ -24,6 +24,13 @@ def extract_transcript_insights(transcript_text: str, metadata: dict) -> dict:
 
     Returns:
         {
+            "participants": [
+                {
+                    "name": "John Smith",
+                    "role": "Sponsor Representative",
+                    "organization": "ABC Capital"
+                }
+            ],
             "key_decisions": ["Decision text...", ...],
             "action_items": [
                 {
@@ -107,6 +114,13 @@ Transcript:
 
 Extract the following in JSON format:
 {{
+    "participants": [
+        {{
+            "name": "Full name of participant",
+            "role": "Their role if mentioned (e.g., 'Sponsor Representative', 'Managing Director')",
+            "organization": "Their organization if mentioned (e.g., 'ABC Capital', 'XYZ Partners')"
+        }}
+    ],
     "key_decisions": ["List of key decisions made during conversation"],
     "action_items": [
         {{
@@ -120,6 +134,7 @@ Extract the following in JSON format:
 }}
 
 Focus on:
+- Identify ALL participants mentioned by name in the conversation
 - Concrete decisions and commitments
 - Specific action items with clear assignees
 - Deal-related risks and concerns
@@ -129,8 +144,9 @@ IMPORTANT:
 1. Return ONLY valid JSON - no additional text, markdown formatting, or explanations
 2. If no items found for a category, use empty array []
 3. For action items without clear assignees, set assignee to null
-4. For sentiment, choose one of: "positive", "neutral", or "concerned"
-5. Be thorough - extract ALL relevant information from the transcript
+4. For participants, include role and organization only if clearly mentioned, otherwise set to null
+5. For sentiment, choose one of: "positive", "neutral", or "concerned"
+6. Be thorough - extract ALL relevant information from the transcript
 
 Return only the JSON object, nothing else."""
 
@@ -173,6 +189,24 @@ def _parse_extraction_response(response_text: str) -> Dict[str, Any]:
             data["action_items"] = []
         if not isinstance(data["risks"], list):
             data["risks"] = []
+
+        # Ensure participants is a list (optional field, default to empty)
+        if "participants" not in data:
+            data["participants"] = []
+        if not isinstance(data["participants"], list):
+            data["participants"] = []
+
+        # Validate participants structure
+        for participant in data["participants"]:
+            if not isinstance(participant, dict):
+                continue  # Skip invalid entries
+            if "name" not in participant:
+                participant["name"] = "Unknown"
+            # Ensure optional fields exist
+            if "role" not in participant:
+                participant["role"] = None
+            if "organization" not in participant:
+                participant["organization"] = None
 
         # Validate action items structure
         for item in data["action_items"]:
