@@ -2,7 +2,7 @@
 Webhook endpoints for external services.
 
 These endpoints do NOT require Clerk authentication since they're called by
-external services (SendGrid, Mailgun, etc.) that can't provide JWT tokens.
+external services (SendGrid, Mailgun, Postmark, etc.) that can't provide JWT tokens.
 
 Security is handled via:
 - Webhook signature verification (when available)
@@ -11,12 +11,16 @@ Security is handled via:
 """
 
 import logging
+import os
+import uuid
+from pathlib import Path
 from fastapi import APIRouter, Request, Form, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.db.session import get_db
-from app.models import Deal, DealDocument
+from app.db.database import SessionLocal
+from app.models import Deal, DealDocument, PendingEmail, PendingEmailAttachment
 from app.services.email_parser import (
     parse_sendgrid_webhook,
     parse_mailgun_webhook,
@@ -26,20 +30,39 @@ from app.services.email_parser import (
     extract_deal_code_from_subject,
     EmailParserError,
 )
+from app.api.pending_emails import process_pending_email_extraction
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["webhooks"])
 
+# Upload directory for attachments
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
 
 class InboundEmailResponse(BaseModel):
     """Response for inbound email processing"""
     success: bool
-    document_id: str | None = None
-    deal_id: str | None = None
-    deal_code: str | None = None
+    pending_email_id: str | None = None
+    organization_id: str | None = None
     message: str
-    attachment_document_ids: list[str] = []
+    attachment_count: int = 0
+
+
+def extract_org_id_from_address(email_address: str) -> str | None:
+    """
+    Extract organization ID from email address using +tag convention.
+
+    Examples:
+        deals+org123@buildingpartnership.co -> org123
+        inbox@buildingpartnership.co -> None
+    """
+    import re
+    match = re.search(r'\+([^@]+)@', email_address)
+    if match:
+        return match.group(1)
+    return None
 
 
 @router.post("/inbound-email", response_model=InboundEmailResponse)
@@ -47,7 +70,7 @@ async def receive_inbound_email(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    # SendGrid fields (also works for Mailgun with mapping)
+    # SendGrid/Postmark fields (also works for Mailgun with mapping)
     from_field: str = Form(None, alias="from"),
     to: str = Form(None),
     cc: str = Form(None),
@@ -62,16 +85,12 @@ async def receive_inbound_email(
     """
     Webhook endpoint for receiving forwarded emails.
 
-    Supports SendGrid Inbound Parse and Mailgun Routes.
+    Supports SendGrid Inbound Parse, Mailgun Routes, and Postmark.
 
-    Users forward emails to: deals+{deal_code}@your-domain.com
-    The deal_code is extracted and used to link the email to a deal.
+    Users forward emails to: deals+{org_id}@buildingpartnership.co
+    The org_id is extracted and used to associate the email with an organization.
 
-    If no deal code found in address, attempts to extract from subject line:
-    - [DEAL-CODE] in subject
-    - "Deal DEAL-CODE" in subject
-
-    If still no deal code found, creates an unlinked email document.
+    The email is stored as a PendingEmail for user review before deal creation.
     """
     try:
         # Get raw form data for attachment handling
@@ -102,99 +121,132 @@ async def receive_inbound_email(
         else:
             parsed_email = parse_sendgrid_webhook(payload)
 
-        # Extract deal code from TO address first
-        deal_code = None
+        # Extract organization ID from TO address
+        org_id = None
         for addr in parsed_email.to_addresses:
-            deal_code = extract_deal_code_from_address(addr)
-            if deal_code:
+            org_id = extract_org_id_from_address(addr)
+            if org_id:
                 break
 
-        # Fallback: extract from subject
-        if not deal_code:
-            deal_code = extract_deal_code_from_subject(parsed_email.subject)
+        # If no org_id found, use a default or reject
+        if not org_id:
+            # Check if this is an email to an existing deal (legacy behavior)
+            deal_code = None
+            for addr in parsed_email.to_addresses:
+                deal_code = extract_deal_code_from_address(addr)
+                if deal_code:
+                    break
 
-        # Look up deal if we have a code
-        deal = None
-        if deal_code:
-            # Try exact match on internal_code first
-            deal = db.query(Deal).filter(Deal.internal_code == deal_code).first()
+            if not deal_code:
+                deal_code = extract_deal_code_from_subject(parsed_email.subject)
 
-            # Try case-insensitive match
-            if not deal:
-                deal = db.query(Deal).filter(
-                    Deal.internal_code.ilike(deal_code)
-                ).first()
+            if deal_code:
+                # Legacy: link to existing deal
+                deal = db.query(Deal).filter(Deal.internal_code.ilike(deal_code)).first()
+                if deal:
+                    # Create document linked to existing deal (old behavior)
+                    email_text = format_email_as_text(parsed_email)
+                    email_metadata = get_email_metadata(parsed_email)
 
-            if deal:
-                logger.info(f"Matched email to deal: {deal.id} ({deal.deal_name})")
-            else:
-                logger.warning(f"No deal found for code: {deal_code}")
+                    document = DealDocument(
+                        deal_id=deal.id,
+                        document_type="email",
+                        file_name=f"Email: {parsed_email.subject[:50]}",
+                        file_url="",
+                        file_size=len(email_text.encode('utf-8')),
+                        parsed_text=email_text,
+                        metadata_json=email_metadata,
+                        parsing_status="completed",
+                    )
+                    db.add(document)
+                    db.commit()
 
-        # Create the email document
-        email_text = format_email_as_text(parsed_email)
-        email_metadata = get_email_metadata(parsed_email)
+                    return InboundEmailResponse(
+                        success=True,
+                        pending_email_id=None,
+                        organization_id=None,
+                        message=f"Email linked to existing deal: {deal.deal_name}",
+                        attachment_count=len(parsed_email.attachments),
+                    )
 
-        document = DealDocument(
-            deal_id=deal.id if deal else None,
-            document_type="email",
-            file_name=f"Email: {parsed_email.subject[:50]}",
-            file_url="",  # Emails don't have file URLs
-            file_size=len(email_text.encode('utf-8')),
-            parsed_text=email_text,
-            metadata_json=email_metadata,
-            parsing_status="completed",
+            # Use 'default' org_id for emails without org identifier
+            org_id = "default"
+            logger.warning(f"No organization ID found in email address, using default")
+
+        # Create PendingEmail record
+        pending_email = PendingEmail(
+            organization_id=org_id,
+            status="received",
+            from_address=parsed_email.from_address,
+            from_name=parsed_email.from_name,
+            subject=parsed_email.subject,
+            body_text=parsed_email.body_text,
+            body_html=parsed_email.body_html,
+            to_addresses=parsed_email.to_addresses,
+            cc_addresses=parsed_email.cc_addresses,
+            email_date=parsed_email.date,
+            message_id=parsed_email.message_id,
+            in_reply_to=parsed_email.in_reply_to,
+            raw_headers=parsed_email.raw_headers,
         )
 
-        db.add(document)
+        db.add(pending_email)
         db.commit()
-        db.refresh(document)
+        db.refresh(pending_email)
 
-        logger.info(f"Created email document: {document.id}")
+        logger.info(f"Created pending email: {pending_email.id} for org {org_id}")
 
-        # Process attachments as separate documents
-        attachment_ids = []
+        # Process and save attachments
+        attachment_count = 0
         for attachment in parsed_email.attachments:
             # Skip tiny or empty attachments
             if attachment.size < 100:
                 continue
 
-            # Determine if attachment should be processed
-            processable_types = [
+            # Save attachment to disk
+            file_id = str(uuid.uuid4())
+            safe_filename = f"{file_id}_{attachment.filename}"
+            file_path = UPLOAD_DIR / safe_filename
+
+            with open(file_path, 'wb') as f:
+                f.write(attachment.content)
+
+            # Determine if attachment should be parsed
+            parseable_types = [
                 'application/pdf',
                 'application/vnd.ms-excel',
                 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             ]
 
-            attachment_doc = DealDocument(
-                deal_id=deal.id if deal else None,
-                document_type="attachment",
+            pending_attachment = PendingEmailAttachment(
+                pending_email_id=pending_email.id,
                 file_name=attachment.filename,
-                file_url="",  # Would need to save to storage and update
+                content_type=attachment.content_type,
                 file_size=attachment.size,
-                parent_document_id=document.id,
-                parsing_status="pending" if attachment.content_type in processable_types else "completed",
-                metadata_json={
-                    "source": "email_attachment",
-                    "parent_email_id": str(document.id),
-                    "original_email_subject": parsed_email.subject,
-                    "content_type": attachment.content_type,
-                }
+                storage_url=str(file_path),
+                parsing_status="pending" if attachment.content_type in parseable_types else "completed",
             )
 
-            db.add(attachment_doc)
-            db.commit()
-            db.refresh(attachment_doc)
+            db.add(pending_attachment)
+            attachment_count += 1
 
-            attachment_ids.append(str(attachment_doc.id))
-            logger.info(f"Created attachment document: {attachment_doc.id} ({attachment.filename})")
+            logger.info(f"Saved attachment: {attachment.filename} ({attachment.size} bytes)")
+
+        db.commit()
+
+        # Trigger background task for AI extraction
+        background_tasks.add_task(
+            process_pending_email_extraction,
+            pending_email.id,
+            SessionLocal
+        )
 
         return InboundEmailResponse(
             success=True,
-            document_id=str(document.id),
-            deal_id=str(deal.id) if deal else None,
-            deal_code=deal_code,
-            message=f"Email processed successfully. {'Linked to deal.' if deal else 'No matching deal found.'}",
-            attachment_document_ids=attachment_ids,
+            pending_email_id=str(pending_email.id),
+            organization_id=org_id,
+            message="Email received and queued for processing",
+            attachment_count=attachment_count,
         )
 
     except EmailParserError as e:

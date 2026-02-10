@@ -390,9 +390,14 @@ Transform the DealDetail page into a Twitter/X-inspired "living deal" interface 
 4. **Enhanced Transcript Features**
    - **Priority:** Medium
    - [ ] Filter bar for Activity Feed (type, date, has insights)
-   - [ ] Upload dialog with transcript-specific fields (topic, participants, date/time)
-   - [ ] Participant management and tagging
+   - [x] Upload dialog with transcript-specific fields (topic, conversation date)
+   - [x] Participant extraction and tagging (via AI)
+   - [x] Participant display in TranscriptViewer
+   - [x] Participant count on TranscriptCard
    - [ ] Transcript metadata editing UI
+   - **Recent Commits:**
+     - Backend: `0320c90` - Add participant extraction to transcript insights
+     - Frontend: `8fa581d` - Add transcript upload dialog and participant display
 
 **Phase 3 - Advanced Features:**
 

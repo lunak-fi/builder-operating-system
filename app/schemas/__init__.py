@@ -7,6 +7,15 @@ from .deal_underwriting import DealUnderwritingCreate, DealUnderwritingUpdate, D
 from .memo import MemoCreate, MemoUpdate, MemoResponse
 from .activity import ActivityItem, ActivityFeedResponse
 from .deal_note import DealNoteCreate, DealNoteUpdate, DealNoteResponse, ThreadExtractionRequest, ThreadExtractionResponse
+from .pending_email import (
+    PendingEmailStatus,
+    PendingEmailAttachmentResponse,
+    PendingEmailResponse,
+    PendingEmailListResponse,
+    PendingEmailConfirmRequest,
+    PendingEmailConfirmResponse,
+    PendingEmailCountResponse,
+)
 
 __all__ = [
     "OperatorCreate",
@@ -37,4 +46,11 @@ __all__ = [
     "DealNoteResponse",
     "ThreadExtractionRequest",
     "ThreadExtractionResponse",
+    "PendingEmailStatus",
+    "PendingEmailAttachmentResponse",
+    "PendingEmailResponse",
+    "PendingEmailListResponse",
+    "PendingEmailConfirmRequest",
+    "PendingEmailConfirmResponse",
+    "PendingEmailCountResponse",
 ]
