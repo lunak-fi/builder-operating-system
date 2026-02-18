@@ -23,10 +23,87 @@ from app.schemas.pending_email import (
 )
 from app.services.llm_extractor import extract_deal_data_from_text, LLMExtractionError
 from app.services.auto_populate import populate_database_from_extraction
+from app.services.document_parser import parse_document, DocumentParserError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pending-emails", tags=["pending-emails"])
+
+
+def process_pending_email_attachment_parsing(
+    attachment_id: UUID,
+    file_path: str,
+    content_type: str,
+    db_session_maker
+):
+    """
+    Background task to parse a single attachment (PDF/Excel).
+    After parsing, checks if all attachments are done and triggers AI extraction.
+    """
+    db = db_session_maker()
+    try:
+        attachment = db.query(PendingEmailAttachment).filter(
+            PendingEmailAttachment.id == attachment_id
+        ).first()
+
+        if not attachment:
+            logger.error(f"Attachment {attachment_id} not found")
+            return
+
+        logger.info(f"Parsing attachment {attachment_id}: {attachment.file_name}")
+
+        # Determine doc type from content type
+        if content_type == "application/pdf":
+            doc_type = "offer_memo"
+        elif content_type in [
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ]:
+            doc_type = "financial_model"
+        else:
+            doc_type = "other"
+
+        try:
+            parsed_text, metadata = parse_document(file_path, doc_type)
+            attachment.parsed_text = parsed_text
+            attachment.parsing_status = "completed"
+            attachment.parsing_error = None
+            logger.info(f"Successfully parsed attachment {attachment_id}: {len(parsed_text)} chars")
+        except DocumentParserError as e:
+            attachment.parsing_status = "failed"
+            attachment.parsing_error = str(e)
+            logger.error(f"Failed to parse attachment {attachment_id}: {e}")
+
+        db.commit()
+
+        # Check if ALL attachments for this email are done parsing
+        pending_email_id = attachment.pending_email_id
+        pending_attachments = db.query(PendingEmailAttachment).filter(
+            PendingEmailAttachment.pending_email_id == pending_email_id,
+            PendingEmailAttachment.parsing_status == "pending"
+        ).count()
+
+        if pending_attachments == 0:
+            # All attachments parsed - trigger AI extraction
+            logger.info(f"All attachments parsed for email {pending_email_id}, triggering AI extraction")
+            process_pending_email_extraction(pending_email_id, db_session_maker)
+        else:
+            logger.info(f"Waiting for {pending_attachments} more attachment(s) to parse for email {pending_email_id}")
+
+    except Exception as e:
+        logger.error(f"Error parsing attachment {attachment_id}: {e}")
+        try:
+            attachment = db.query(PendingEmailAttachment).filter(
+                PendingEmailAttachment.id == attachment_id
+            ).first()
+            if attachment:
+                attachment.parsing_status = "failed"
+                attachment.parsing_error = str(e)
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 def process_pending_email_extraction(pending_email_id: UUID, db_session_maker):
@@ -211,34 +288,45 @@ def confirm_pending_email(
             detail=f"Cannot confirm email with status '{pending_email.status}'. Must be 'ready_for_review'."
         )
 
-    if not request.operator_ids:
-        raise HTTPException(status_code=400, detail="At least one operator required")
+    # Validate operators only if creating a new deal
+    if not request.deal_id and not request.operator_ids:
+        raise HTTPException(status_code=400, detail="At least one operator required when creating a new deal")
 
-    # Validate all operators exist
-    operator_uuids = [UUID(oid) for oid in request.operator_ids]
+    # Validate all operators exist (if provided)
+    operator_uuids = [UUID(oid) for oid in request.operator_ids] if request.operator_ids else []
     for operator_id in operator_uuids:
         operator = db.query(Operator).filter(Operator.id == operator_id).first()
         if not operator:
             raise HTTPException(status_code=404, detail=f"Operator {operator_id} not found")
 
     try:
-        # Use the provided extracted_data or fall back to stored extraction
-        extracted_data = request.extracted_data or pending_email.extracted_data
+        if request.deal_id:
+            # Link to existing deal
+            deal_id = UUID(request.deal_id)
+            from app.models import Deal
+            deal = db.query(Deal).filter(Deal.id == deal_id).first()
+            if not deal:
+                raise HTTPException(status_code=404, detail="Deal not found")
+            logger.info(f"Linking pending email {pending_email_id} to existing deal {deal_id}")
+        else:
+            # Create new deal
+            # Use the provided extracted_data or fall back to stored extraction
+            extracted_data = request.extracted_data or pending_email.extracted_data
 
-        if not extracted_data:
-            raise HTTPException(status_code=400, detail="No extracted data available")
+            if not extracted_data:
+                raise HTTPException(status_code=400, detail="No extracted data available")
 
-        logger.info(f"Creating deal from pending email {pending_email_id}")
+            logger.info(f"Creating deal from pending email {pending_email_id}")
 
-        # Create deal using the auto_populate service
-        result = populate_database_from_extraction(
-            extracted_data=extracted_data,
-            document_id=None,  # No source document yet
-            operator_ids=operator_uuids,
-            db=db
-        )
+            # Create deal using the auto_populate service
+            result = populate_database_from_extraction(
+                extracted_data=extracted_data,
+                document_id=None,  # No source document yet
+                operator_ids=operator_uuids,
+                db=db
+            )
 
-        deal_id = result["deal_id"]
+            deal_id = result["deal_id"]
 
         # Create email document linked to the deal
         email_document = DealDocument(

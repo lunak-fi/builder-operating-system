@@ -30,7 +30,7 @@ from app.services.email_parser import (
     extract_deal_code_from_subject,
     EmailParserError,
 )
-from app.api.pending_emails import process_pending_email_extraction
+from app.api.pending_emails import process_pending_email_extraction, process_pending_email_attachment_parsing
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +108,19 @@ async def receive_inbound_email(
             "attachments": str(attachments) if attachments else form_data.get("attachments", "0"),
         }
 
-        # Copy attachment fields
+        # Copy attachment fields (await async reads so sync parser gets bytes)
         for key in form_data.keys():
             if key.startswith('attachment'):
-                payload[key] = form_data[key]
+                upload_file = form_data[key]
+                if hasattr(upload_file, 'read'):
+                    content = await upload_file.read()
+                    payload[key] = type('Attachment', (), {
+                        'read': lambda self, c=content: c,
+                        'filename': getattr(upload_file, 'filename', key),
+                        'content_type': getattr(upload_file, 'content_type', 'application/octet-stream'),
+                    })()
+                else:
+                    payload[key] = upload_file
 
         logger.info(f"Received inbound email: to={payload['to']}, subject={payload['subject']}")
 
@@ -234,12 +243,33 @@ async def receive_inbound_email(
 
         db.commit()
 
-        # Trigger background task for AI extraction
-        background_tasks.add_task(
-            process_pending_email_extraction,
-            pending_email.id,
-            SessionLocal
-        )
+        # Refresh to get attachment IDs
+        db.refresh(pending_email)
+
+        # Check for parseable attachments
+        parseable_attachments = [
+            att for att in pending_email.attachments
+            if att.parsing_status == "pending"
+        ]
+
+        if parseable_attachments:
+            # Queue parsing task for each attachment
+            for att in parseable_attachments:
+                background_tasks.add_task(
+                    process_pending_email_attachment_parsing,
+                    att.id,
+                    att.storage_url,
+                    att.content_type,
+                    SessionLocal
+                )
+            logger.info(f"Queued {len(parseable_attachments)} attachment(s) for parsing")
+        else:
+            # No parseable attachments - trigger AI extraction immediately
+            background_tasks.add_task(
+                process_pending_email_extraction,
+                pending_email.id,
+                SessionLocal
+            )
 
         return InboundEmailResponse(
             success=True,

@@ -81,9 +81,10 @@ class PendingEmailListResponse(BaseModel):
 
 
 class PendingEmailConfirmRequest(BaseModel):
-    """Request to confirm a pending email and create a deal"""
+    """Request to confirm a pending email and create/link a deal"""
     operator_ids: list[str]
     extracted_data: Optional[dict] = None  # Allow user to modify extracted data
+    deal_id: Optional[str] = None  # If provided, link to existing deal instead of creating new
 
 
 class PendingEmailConfirmResponse(BaseModel):

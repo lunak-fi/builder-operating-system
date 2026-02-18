@@ -70,6 +70,18 @@ def list_deals(
     return deals
 
 
+@router.get("/search", response_model=List[DealResponse])
+def search_deals(q: str, db: Session = Depends(get_db)):
+    """
+    Search deals by name for autocomplete.
+    Returns up to 10 results.
+    """
+    deals = db.query(Deal).filter(
+        Deal.deal_name.ilike(f"%{q}%")
+    ).order_by(Deal.created_at.desc()).limit(10).all()
+    return deals
+
+
 @router.get("/velocity-metrics")
 def get_velocity_metrics(db: Session = Depends(get_db)):
     """
