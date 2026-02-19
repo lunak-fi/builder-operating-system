@@ -27,8 +27,11 @@ ENV/
 # Uploads
 uploads/
 
-# Tests
+# Tests and debug scripts
 test_*.py
+check_*.py
+inspect_*.py
+*_result.json
 
 # Geocoding data (download via script)
 app/data/msa_boundaries/
