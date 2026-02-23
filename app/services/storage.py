@@ -86,6 +86,26 @@ def upload_file(local_path: str, storage_path: str, content_type: str = None) ->
         return None
 
 
+def move_file(from_path: str, to_path: str) -> str | None:
+    """
+    Move a file within Supabase Storage (e.g. from unlinked/ to deals/{id}/).
+
+    Returns the new path on success, None on failure.
+    """
+    client = get_storage_client()
+    if not client:
+        return None
+
+    try:
+        bucket = _get_bucket()
+        client.storage.from_(bucket).move(from_path, to_path)
+        logger.info(f"Moved {from_path} → {to_path}")
+        return to_path
+    except Exception as e:
+        logger.error(f"Supabase move failed {from_path} → {to_path}: {e}")
+        return None
+
+
 def download_file(storage_path: str, local_path: str) -> bool:
     """
     Download a file from Supabase Storage to a local path.

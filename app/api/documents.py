@@ -928,12 +928,27 @@ def confirm_extraction(
         # Link document to the newly created deal
         document.deal_id = result["deal_id"]
 
+        # Move file from unlinked/ to deal folder in Supabase
+        if document.storage_path and document.storage_path.startswith("unlinked/"):
+            from app.services.storage import move_file
+            new_path = f"deals/{result['deal_id']}/documents/{document.file_name}"
+            moved = move_file(document.storage_path, new_path)
+            if moved:
+                document.storage_path = moved
+
         # Also link any related documents (e.g., Excel files) to the deal
         if request.related_document_ids:
+            from app.services.storage import move_file
             for related_doc_id in request.related_document_ids:
                 related_doc = db.query(DealDocument).filter(DealDocument.id == related_doc_id).first()
                 if related_doc:
                     related_doc.deal_id = result["deal_id"]
+                    # Move related file from unlinked/ to deal folder
+                    if related_doc.storage_path and related_doc.storage_path.startswith("unlinked/"):
+                        new_path = f"deals/{result['deal_id']}/documents/{related_doc.file_name}"
+                        moved = move_file(related_doc.storage_path, new_path)
+                        if moved:
+                            related_doc.storage_path = moved
                     logger.info(f"Linked related document {related_doc_id} to deal {result['deal_id']}")
 
         db.commit()

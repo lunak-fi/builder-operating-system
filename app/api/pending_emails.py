@@ -367,6 +367,15 @@ def confirm_pending_email(
             ]:
                 doc_type = "financial_model"
 
+            # Move file from unlinked/pending to deal folder in Supabase
+            storage_path = attachment.storage_path
+            if storage_path and (storage_path.startswith("unlinked/") or storage_path.startswith("pending/")):
+                from app.services.storage import move_file
+                new_path = f"deals/{deal_id}/documents/{attachment.file_name}"
+                moved = move_file(storage_path, new_path)
+                if moved:
+                    storage_path = moved
+
             attachment_doc = DealDocument(
                 deal_id=deal_id,
                 document_type=doc_type,
@@ -375,7 +384,7 @@ def confirm_pending_email(
                 file_size=attachment.file_size,
                 parsed_text=attachment.parsed_text,
                 parsing_status=attachment.parsing_status,
-                storage_path=attachment.storage_path,
+                storage_path=storage_path,
                 metadata_json={
                     "source": "pending_email_attachment",
                     "pending_email_id": str(pending_email_id),
