@@ -1,6 +1,6 @@
 # Builder Operating System - Project Status & Roadmap
 
-**Last updated:** 2026-02-18
+**Last updated:** 2026-02-23
 
 ---
 
@@ -11,6 +11,7 @@
 - **AI**: Claude (Anthropic) for document extraction, memo generation, transcript analysis
 - **Auth**: Clerk (OAuth + JWT)
 - **Email**: SendGrid Inbound Parse for email forwarding
+- **Storage**: Supabase Storage for durable file persistence
 
 ### Database Schema (10 tables)
 Operators, Principals, Deals, DealOperators (junction), DealDocuments (with versioning), DealUnderwriting, Memos, DealStageTransitions, DealNotes, PendingEmails + PendingEmailAttachments
@@ -104,6 +105,7 @@ Operators, Principals, Deals, DealOperators (junction), DealDocuments (with vers
 | **Document deletion** | Delete button with confirmation dialog on all doc types |
 | **Document date picker** | Optional date field in upload dialogs |
 | **Chronological ordering** | Documents ordered by event date, not upload time |
+| **Supabase Storage** | Durable file storage via Supabase; uploads to `unlinked/` during parsing, auto-moves to `deals/{id}/documents/` on deal confirmation |
 
 ---
 
@@ -155,9 +157,11 @@ User forwards email -> SendGrid webhook -> /webhooks/inbound-email
 ### Document Upload Flow
 ```
 User uploads file -> POST /api/documents/upload
+  -> Store file in Supabase Storage (unlinked/)
   -> Parse document (PDF/Excel/text)
   -> AI extracts deal data
   -> User confirms extraction -> Deal created
+  -> move_file() moves from unlinked/ to deals/{id}/documents/
   -> Memo auto-generated in background
 ```
 
