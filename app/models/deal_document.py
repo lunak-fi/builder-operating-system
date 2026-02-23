@@ -25,6 +25,9 @@ class DealDocument(Base):
     parsing_status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     parsing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Supabase Storage path (e.g. "deals/{deal_id}/documents/file.pdf")
+    storage_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # New fields for multi-document support
     file_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     metadata_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

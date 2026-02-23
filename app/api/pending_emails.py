@@ -375,6 +375,7 @@ def confirm_pending_email(
                 file_size=attachment.file_size,
                 parsed_text=attachment.parsed_text,
                 parsing_status=attachment.parsing_status,
+                storage_path=attachment.storage_path,
                 metadata_json={
                     "source": "pending_email_attachment",
                     "pending_email_id": str(pending_email_id),

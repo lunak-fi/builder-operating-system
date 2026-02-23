@@ -31,6 +31,7 @@ from app.services.email_parser import (
     EmailParserError,
 )
 from app.api.pending_emails import process_pending_email_extraction, process_pending_email_attachment_parsing
+from app.services.storage import upload_file
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,10 @@ async def receive_inbound_email(
             with open(file_path, 'wb') as f:
                 f.write(attachment.content)
 
+            # Upload to Supabase Storage
+            supabase_path = f"pending/{pending_email.id}/{attachment.filename}"
+            storage_result = upload_file(str(file_path), supabase_path, attachment.content_type)
+
             # Determine if attachment should be parsed
             parseable_types = [
                 'application/pdf',
@@ -233,6 +238,7 @@ async def receive_inbound_email(
                 content_type=attachment.content_type,
                 file_size=attachment.size,
                 storage_url=str(file_path),
+                storage_path=storage_result,
                 parsing_status="pending" if attachment.content_type in parseable_types else "completed",
             )
 

@@ -21,6 +21,7 @@ from app.services.llm_extractor import (
     merge_extraction_data
 )
 from app.services.excel_analyst import analyze_financial_model, ExcelAnalystError
+from app.services.storage import upload_file, download_file
 from app.services.auto_populate import populate_database_from_extraction, AutoPopulationError
 from app.services.email_parser import (
     parse_sendgrid_webhook,
@@ -75,6 +76,14 @@ def process_document_parsing(document_id: UUID, file_path: str, document_type: s
             document.metadata_json = metadata
             document.parsing_status = "completed"
             document.parsing_error = None
+
+            # Upload to Supabase Storage for durable storage
+            deal_folder = f"deals/{document.deal_id}" if document.deal_id else "unlinked"
+            storage_dest = f"{deal_folder}/documents/{document.file_name}"
+            result = upload_file(file_path, storage_dest)
+            if result:
+                document.storage_path = result
+
             db.commit()
             logger.info(f"Successfully parsed document {document_id}: {len(extracted_text)} characters")
 
@@ -544,13 +553,32 @@ def extract_structured_data(
         extraction_method = "text"
         excel_data = None
 
+        # Helper: ensure a file is available locally, downloading from Supabase if needed
+        import tempfile
+        temp_files = []  # Track temp files for cleanup
+
+        def ensure_local_file(doc) -> str | None:
+            """Return a local path for the document, downloading from Supabase if needed."""
+            if os.path.exists(doc.file_url):
+                return doc.file_url
+            if doc.storage_path:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=Path(doc.file_name).suffix)
+                tmp.close()
+                if download_file(doc.storage_path, tmp.name):
+                    temp_files.append(tmp.name)
+                    return tmp.name
+            return None
+
         # If we have related Excel documents, extract from them first
         if related_excel_docs and document.document_type == "offer_memo":
             excel_doc = related_excel_docs[0]  # Use first Excel doc
             logger.info(f"Extracting financial data from related Excel: {excel_doc.id}")
 
             try:
-                excel_data = analyze_financial_model(excel_path=excel_doc.file_url)
+                excel_path = ensure_local_file(excel_doc)
+                if not excel_path:
+                    raise ExcelAnalystError("Excel file not available locally or in storage")
+                excel_data = analyze_financial_model(excel_path=excel_path)
                 logger.info(f"Successfully extracted {len(excel_data.get('underwriting', {}))} metrics from Excel")
             except ExcelAnalystError as e:
                 logger.warning(f"Excel extraction failed, will use PDF only: {str(e)}")
@@ -562,8 +590,11 @@ def extract_structured_data(
             extraction_method = "excel"
 
             try:
+                local_path = ensure_local_file(document)
+                if not local_path:
+                    raise LLMExtractionError("Excel file not available locally or in storage")
                 extracted_data = analyze_financial_model(
-                    excel_path=document.file_url
+                    excel_path=local_path
                 )
 
                 # Add deal placeholder (Excel doesn't have deal narrative)
@@ -597,8 +628,11 @@ def extract_structured_data(
             if use_vision:
                 # Vision-based extraction
                 from app.services.llm_extractor import extract_deal_data_from_vision
+                local_path = ensure_local_file(document)
+                if not local_path:
+                    raise LLMExtractionError("PDF file not available locally or in storage")
                 extracted_data = extract_deal_data_from_vision(
-                    pdf_path=document.file_url,
+                    pdf_path=local_path,
                     text_fallback=document.parsed_text
                 )
             else:
@@ -679,6 +713,13 @@ def extract_structured_data(
     except Exception as e:
         logger.error(f"Unexpected error during extraction: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+    finally:
+        # Clean up any temp files downloaded from Supabase
+        for tmp_path in temp_files:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 @router.post("/deals/{deal_id}/re-extract")
@@ -722,6 +763,21 @@ def re_extract_deal(deal_id: UUID, db: Session = Depends(get_db)):
             detail="PDF document not fully parsed yet"
         )
 
+    temp_files = []
+
+    # Helper: ensure a file is available locally, downloading from Supabase if needed
+    def ensure_local_file(doc) -> str | None:
+        if os.path.exists(doc.file_url):
+            return doc.file_url
+        if doc.storage_path:
+            import tempfile as _tempfile
+            tmp = _tempfile.NamedTemporaryFile(delete=False, suffix=Path(doc.file_name).suffix)
+            tmp.close()
+            if download_file(doc.storage_path, tmp.name):
+                temp_files.append(tmp.name)
+                return tmp.name
+        return None
+
     try:
         # Find related Excel documents by deal_id
         excel_docs = db.query(DealDocument).filter(
@@ -737,7 +793,10 @@ def re_extract_deal(deal_id: UUID, db: Session = Depends(get_db)):
             excel_doc = excel_docs[0]  # Use first Excel
 
             try:
-                excel_data = analyze_financial_model(excel_path=excel_doc.file_url)
+                excel_path = ensure_local_file(excel_doc)
+                if not excel_path:
+                    raise ExcelAnalystError("Excel file not available locally or in storage")
+                excel_data = analyze_financial_model(excel_path=excel_path)
                 logger.info(f"Extracted {len(excel_data.get('underwriting', {}))} metrics from Excel")
             except ExcelAnalystError as e:
                 logger.warning(f"Excel extraction failed: {str(e)}")
@@ -753,8 +812,11 @@ def re_extract_deal(deal_id: UUID, db: Session = Depends(get_db)):
 
         if has_images or text_too_short:
             from app.services.llm_extractor import extract_deal_data_from_vision
+            local_path = ensure_local_file(pdf_doc)
+            if not local_path:
+                raise LLMExtractionError("PDF file not available locally or in storage")
             extracted_data = extract_deal_data_from_vision(
-                pdf_path=pdf_doc.file_url,
+                pdf_path=local_path,
                 text_fallback=pdf_doc.parsed_text
             )
             extraction_method = "vision"
@@ -813,6 +875,12 @@ def re_extract_deal(deal_id: UUID, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Unexpected error during re-extraction: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Re-extraction failed: {str(e)}")
+    finally:
+        for tmp_path in temp_files:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 @router.post("/{document_id}/confirm")

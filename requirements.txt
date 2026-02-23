@@ -22,3 +22,4 @@ shapely==2.0.2
 requests==2.31.0
 fiona==1.9.5
 fastapi-clerk-auth==0.0.9
+supabase==2.13.0

@@ -36,6 +36,9 @@ class PendingEmailAttachment(Base):
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     storage_url: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # Supabase Storage path (e.g. "pending/{id}/attachment.pdf")
+    storage_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Parsing status for PDFs/Excel files
     parsing_status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     parsed_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
