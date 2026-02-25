@@ -112,16 +112,16 @@ async def receive_inbound_email(
         # Copy attachment fields (await async reads so sync parser gets bytes)
         for key in form_data.keys():
             if key.startswith('attachment'):
-                upload_file = form_data[key]
-                if hasattr(upload_file, 'read'):
-                    content = await upload_file.read()
+                file_obj = form_data[key]
+                if hasattr(file_obj, 'read'):
+                    content = await file_obj.read()
                     payload[key] = type('Attachment', (), {
                         'read': lambda self, c=content: c,
-                        'filename': getattr(upload_file, 'filename', key),
-                        'content_type': getattr(upload_file, 'content_type', 'application/octet-stream'),
+                        'filename': getattr(file_obj, 'filename', key),
+                        'content_type': getattr(file_obj, 'content_type', 'application/octet-stream'),
                     })()
                 else:
-                    payload[key] = upload_file
+                    payload[key] = file_obj
 
         logger.info(f"Received inbound email: to={payload['to']}, subject={payload['subject']}")
 
@@ -130,6 +130,21 @@ async def receive_inbound_email(
             parsed_email = parse_mailgun_webhook(payload)
         else:
             parsed_email = parse_sendgrid_webhook(payload)
+
+        # Deduplicate by message_id to prevent retries from creating duplicates
+        if parsed_email.message_id:
+            existing = db.query(PendingEmail).filter(
+                PendingEmail.message_id == parsed_email.message_id
+            ).first()
+            if existing:
+                logger.info(f"Duplicate email detected (message_id={parsed_email.message_id}), returning existing pending_email {existing.id}")
+                return InboundEmailResponse(
+                    success=True,
+                    pending_email_id=str(existing.id),
+                    organization_id=existing.organization_id,
+                    message="Duplicate email ignored",
+                    attachment_count=0,
+                )
 
         # Extract organization ID from TO address
         org_id = None
