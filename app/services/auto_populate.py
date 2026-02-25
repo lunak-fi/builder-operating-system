@@ -135,7 +135,7 @@ def _create_deal(deal_data: Dict[str, Any], operator_id: UUID, db: Session) -> D
     # Build deal fields from extracted data
     deal_fields = {
         "operator_id": operator_id,
-        "deal_name": deal_data.get("deal_name", "Unnamed Deal"),
+        "deal_name": deal_data.get("deal_name") or "Unnamed Deal",
         "internal_code": deal_data.get("internal_code") or f"AUTO-{uuid.uuid4().hex[:8].upper()}",
         "status": "received"  # New deals start in "received" status
     }
