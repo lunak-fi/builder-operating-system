@@ -468,9 +468,11 @@ def _parse_extraction_response(response_text: str) -> Dict[str, Any]:
         # Parse JSON
         data = json.loads(text)
 
-        # Validate required fields
-        if "deal" not in data or "deal_name" not in data["deal"]:
-            raise LLMExtractionError("Missing required field: deal.deal_name")
+        # Ensure deal section exists (deal_name may be None for sponsor-only docs)
+        if "deal" not in data:
+            data["deal"] = {}
+        if "deal_name" not in data["deal"]:
+            data["deal"]["deal_name"] = None
 
         # Handle backward compatibility: singular operator → operators array
         if "operator" in data and "operators" not in data:

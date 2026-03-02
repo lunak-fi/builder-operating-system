@@ -15,6 +15,7 @@ class DocumentType(str, Enum):
 
 class DealDocumentBase(BaseModel):
     deal_id: UUID | None = None
+    operator_id: UUID | None = None
     document_type: str
     file_name: str
     file_url: str
@@ -36,6 +37,7 @@ class DealDocumentCreate(DealDocumentBase):
 
 class DealDocumentUpdate(BaseModel):
     deal_id: UUID | None = None
+    operator_id: UUID | None = None
     document_type: str | None = None
     file_name: str | None = None
     file_url: str | None = None

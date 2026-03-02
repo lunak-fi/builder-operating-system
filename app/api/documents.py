@@ -45,6 +45,13 @@ class ConfirmExtractionRequest(BaseModel):
     extracted_data: dict
     related_document_ids: List[UUID] | None = None  # Excel or other related docs to link to deal
 
+
+class SaveToSponsorRequest(BaseModel):
+    """Request body for saving a document to a sponsor (no deal creation)"""
+    operator_ids: List[UUID]
+    extracted_data: dict
+    related_document_ids: List[UUID] | None = None
+
 # Mapping of file extensions to document types
 ALLOWED_EXTENSIONS = {
     '.pdf': 'offer_memo',
@@ -78,7 +85,12 @@ def process_document_parsing(document_id: UUID, file_path: str, document_type: s
             document.parsing_error = None
 
             # Upload to Supabase Storage for durable storage
-            deal_folder = f"deals/{document.deal_id}" if document.deal_id else "unlinked"
+            if document.deal_id:
+                deal_folder = f"deals/{document.deal_id}"
+            elif document.operator_id:
+                deal_folder = f"sponsors/{document.operator_id}"
+            else:
+                deal_folder = "unlinked"
             storage_dest = f"{deal_folder}/documents/{document.file_name}"
             result = upload_file(file_path, storage_dest)
             if result:
@@ -969,6 +981,200 @@ def confirm_extraction(
     except Exception as e:
         logger.error(f"Unexpected error during deal creation: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Deal creation failed: {str(e)}")
+
+
+@router.post("/{document_id}/save-to-sponsor")
+def save_to_sponsor(
+    document_id: UUID,
+    request: SaveToSponsorRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Save a document to a sponsor without creating a deal.
+
+    Links the document to the primary operator, creates principals
+    from extracted data, and optionally updates operator fields.
+    """
+    # Get document
+    document = db.query(DealDocument).filter(DealDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Validate at least one operator
+    if not request.operator_ids:
+        raise HTTPException(status_code=400, detail="At least one operator required")
+
+    # Validate all operators exist
+    primary_operator = None
+    for idx, operator_id in enumerate(request.operator_ids):
+        operator = db.query(Operator).filter(Operator.id == operator_id).first()
+        if not operator:
+            raise HTTPException(status_code=404, detail=f"Operator {operator_id} not found")
+        if idx == 0:
+            primary_operator = operator
+
+    try:
+        # Link document to primary operator (no deal created)
+        document.operator_id = primary_operator.id
+        logger.info(f"Linking document {document_id} to operator {primary_operator.id}")
+
+        # Create principals from extracted data
+        principal_ids = []
+        principals_data = request.extracted_data.get("principals", [])
+        if principals_data:
+            from app.services.auto_populate import _create_principals
+            for operator_id in request.operator_ids:
+                principals = _create_principals(principals_data, operator_id, db)
+                principal_ids.extend([str(p.id) for p in principals])
+            if principal_ids:
+                logger.info(f"Created {len(principal_ids)} principal(s) for sponsor")
+
+        # Optionally update operator fields from extracted data
+        extracted_operators = request.extracted_data.get("operators", [])
+        if extracted_operators:
+            op_data = extracted_operators[0]
+            for field in ["description", "primary_geography_focus", "primary_asset_type_focus",
+                          "website_url", "hq_city", "hq_state"]:
+                value = op_data.get(field)
+                if value and not getattr(primary_operator, field, None):
+                    setattr(primary_operator, field, value)
+
+        # Move file from unlinked/ to sponsors/{operator_id}/documents/
+        if document.storage_path and document.storage_path.startswith("unlinked/"):
+            from app.services.storage import move_file
+            new_path = f"sponsors/{primary_operator.id}/documents/{document.file_name}"
+            moved = move_file(document.storage_path, new_path)
+            if moved:
+                document.storage_path = moved
+
+        # Also link any related documents (e.g., Excel files) to the sponsor
+        if request.related_document_ids:
+            from app.services.storage import move_file
+            for related_doc_id in request.related_document_ids:
+                related_doc = db.query(DealDocument).filter(DealDocument.id == related_doc_id).first()
+                if related_doc:
+                    related_doc.operator_id = primary_operator.id
+                    if related_doc.storage_path and related_doc.storage_path.startswith("unlinked/"):
+                        new_path = f"sponsors/{primary_operator.id}/documents/{related_doc.file_name}"
+                        moved = move_file(related_doc.storage_path, new_path)
+                        if moved:
+                            related_doc.storage_path = moved
+                    logger.info(f"Linked related document {related_doc_id} to sponsor {primary_operator.id}")
+
+        db.commit()
+
+        logger.info(f"Document {document_id} saved to sponsor {primary_operator.id}")
+
+        return {
+            "success": True,
+            "document_id": str(document_id),
+            "operator_id": str(primary_operator.id),
+            "principal_ids": principal_ids
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to save document to sponsor: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save to sponsor: {str(e)}")
+
+
+@router.get("/operators/{operator_id}/documents", response_model=List[DealDocumentResponse])
+def get_sponsor_documents(
+    operator_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all documents linked to a sponsor/operator.
+    """
+    # Validate operator exists
+    operator = db.query(Operator).filter(Operator.id == operator_id).first()
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    documents = db.query(DealDocument).filter(
+        DealDocument.operator_id == operator_id
+    ).order_by(DealDocument.created_at.desc()).all()
+
+    return documents
+
+
+@router.post("/operators/{operator_id}/upload", response_model=DealDocumentResponse, status_code=201)
+async def upload_sponsor_document(
+    operator_id: UUID,
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload a document directly to a sponsor/operator (no deal created).
+    Supports: PDF, Excel (.xlsx, .xls), Text (.txt, .md), Email (.eml)
+    """
+    # Validate operator exists
+    operator = db.query(Operator).filter(Operator.id == operator_id).first()
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    # Get file extension
+    file_extension = Path(file.filename).suffix.lower()
+
+    # Validate file type
+    if file_extension not in ALLOWED_EXTENSIONS:
+        allowed = ', '.join(ALLOWED_EXTENSIONS.keys())
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not supported. Allowed: {allowed}"
+        )
+
+    # Auto-detect document type from extension
+    detected_type = ALLOWED_EXTENSIONS[file_extension]
+
+    # Create upload directory if it doesn't exist
+    upload_dir = Path(os.getenv("UPLOAD_DIR", "./uploads"))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate unique filename
+    filename = f"{operator_id}_{file.filename}"
+    file_path = upload_dir / filename
+
+    # Save file and get file size
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        file_size = file_path.stat().st_size
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    # Create database record (operator_id set, no deal_id)
+    db_document = DealDocument(
+        operator_id=operator_id,
+        document_type=detected_type,
+        file_name=file.filename,
+        file_url=str(file_path),
+        file_size=file_size,
+        parsing_status="processing"
+    )
+
+    db.add(db_document)
+    db.commit()
+    db.refresh(db_document)
+
+    # Default document_date to upload time
+    db_document.document_date = db_document.created_at
+    db.commit()
+
+    # Trigger background document parsing
+    from app.db.database import SessionLocal
+    background_tasks.add_task(
+        process_document_parsing,
+        db_document.id,
+        str(file_path),
+        detected_type,
+        SessionLocal
+    )
+
+    logger.info(f"Uploaded sponsor document {db_document.id} ({detected_type}) for operator {operator_id}")
+
+    return db_document
 
 
 @router.post("/{document_id}/new-version", response_model=DealDocumentResponse, status_code=201)

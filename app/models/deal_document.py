@@ -17,6 +17,9 @@ class DealDocument(Base):
     deal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=True
     )
+    operator_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("operators.id", ondelete="SET NULL"), nullable=True
+    )
     document_type: Mapped[str] = mapped_column(Text, nullable=False)
     file_name: Mapped[str] = mapped_column(Text, nullable=False)
     file_url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -51,6 +54,7 @@ class DealDocument(Base):
 
     # Relationships
     deal: Mapped["Deal"] = relationship("Deal", back_populates="documents")
+    operator: Mapped[Optional["Operator"]] = relationship("Operator", back_populates="documents")
 
     # Self-referential relationship for document versions
     versions: Mapped[List["DealDocument"]] = relationship(
