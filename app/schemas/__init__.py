@@ -7,6 +7,7 @@ from .deal_underwriting import DealUnderwritingCreate, DealUnderwritingUpdate, D
 from .memo import MemoCreate, MemoUpdate, MemoResponse
 from .activity import ActivityItem, ActivityFeedResponse
 from .deal_note import DealNoteCreate, DealNoteUpdate, DealNoteResponse, ThreadExtractionRequest, ThreadExtractionResponse
+from .sponsor_note import SponsorNoteCreate, SponsorNoteUpdate, SponsorNoteResponse
 from .pending_email import (
     PendingEmailStatus,
     PendingEmailAttachmentResponse,
@@ -53,4 +54,7 @@ __all__ = [
     "PendingEmailConfirmRequest",
     "PendingEmailConfirmResponse",
     "PendingEmailCountResponse",
+    "SponsorNoteCreate",
+    "SponsorNoteUpdate",
+    "SponsorNoteResponse",
 ]

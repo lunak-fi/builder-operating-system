@@ -40,3 +40,6 @@ class Operator(Base):
     deal_operators: Mapped[list["DealOperator"]] = relationship(
         "DealOperator", back_populates="operator", cascade="all, delete-orphan"
     )
+    sponsor_notes: Mapped[list["SponsorNote"]] = relationship(
+        "SponsorNote", back_populates="operator", cascade="all, delete-orphan"
+    )
