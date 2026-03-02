@@ -8,6 +8,7 @@ from .memo import MemoCreate, MemoUpdate, MemoResponse
 from .activity import ActivityItem, ActivityFeedResponse
 from .deal_note import DealNoteCreate, DealNoteUpdate, DealNoteResponse, ThreadExtractionRequest, ThreadExtractionResponse
 from .sponsor_note import SponsorNoteCreate, SponsorNoteUpdate, SponsorNoteResponse
+from .sponsor_assessment import SponsorAssessmentUpsert, SponsorAssessmentResponse
 from .pending_email import (
     PendingEmailStatus,
     PendingEmailAttachmentResponse,
@@ -57,4 +58,6 @@ __all__ = [
     "SponsorNoteCreate",
     "SponsorNoteUpdate",
     "SponsorNoteResponse",
+    "SponsorAssessmentUpsert",
+    "SponsorAssessmentResponse",
 ]

@@ -10,9 +10,10 @@ from .deal_note import DealNote
 from .pending_email import PendingEmail
 from .pending_email_attachment import PendingEmailAttachment
 from .sponsor_note import SponsorNote
+from .sponsor_assessment import SponsorAssessment
 
 __all__ = [
     "Operator", "Principal", "Deal", "DealOperator", "DealDocument",
     "DealUnderwriting", "DealStageTransition", "Memo", "DealNote",
-    "PendingEmail", "PendingEmailAttachment", "SponsorNote"
+    "PendingEmail", "PendingEmailAttachment", "SponsorNote", "SponsorAssessment"
 ]

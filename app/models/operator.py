@@ -46,3 +46,6 @@ class Operator(Base):
     documents: Mapped[list["DealDocument"]] = relationship(
         "DealDocument", back_populates="operator"
     )
+    sponsor_assessment: Mapped["SponsorAssessment"] = relationship(
+        "SponsorAssessment", back_populates="operator", uselist=False, cascade="all, delete-orphan"
+    )

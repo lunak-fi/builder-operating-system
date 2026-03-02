@@ -1,6 +1,6 @@
 # Builder Operating System - Project Status & Roadmap
 
-**Last updated:** 2026-02-23
+**Last updated:** 2026-03-02
 
 ---
 
@@ -13,8 +13,8 @@
 - **Email**: SendGrid Inbound Parse for email forwarding
 - **Storage**: Supabase Storage for durable file persistence
 
-### Database Schema (10 tables)
-Operators, Principals, Deals, DealOperators (junction), DealDocuments (with versioning), DealUnderwriting, Memos, DealStageTransitions, DealNotes, PendingEmails + PendingEmailAttachments
+### Database Schema (11 tables)
+Operators, Principals, Deals, DealOperators (junction), DealDocuments (with versioning + operator_id), DealUnderwriting, Memos, DealStageTransitions, DealNotes, SponsorNotes, PendingEmails + PendingEmailAttachments
 
 ---
 
@@ -27,7 +27,7 @@ Operators, Principals, Deals, DealOperators (junction), DealDocuments (with vers
 | **Document Processing** | PDF/Excel upload, AI extraction, version control |
 | **AI Data Extraction** | Claude extracts deal info, financials, sponsor data from documents |
 | **Financial Model Analysis** | Excel parsing with fuzzy sheet matching, metric extraction |
-| **Sponsor Management** | CRUD + search + deal associations |
+| **Sponsor Management** | CRUD + search + deal associations + sponsor detail page |
 | **Dashboard Analytics** | KPIs, charts, velocity metrics, contextual insights |
 | **Geocoding/MSA Mapping** | Census API + shapefile-based market standardization |
 
@@ -107,6 +107,14 @@ Operators, Principals, Deals, DealOperators (junction), DealDocuments (with vers
 | **Chronological ordering** | Documents ordered by event date, not upload time |
 | **Supabase Storage** | Durable file storage via Supabase; uploads to `unlinked/` during parsing, auto-moves to `deals/{id}/documents/` on deal confirmation |
 
+### Sponsor Documents & Notes
+| Feature | Description |
+|---------|-------------|
+| **Sponsor Notes/Timeline** | Sponsor-specific notes with types (quick_note, meeting, call, email, internal), timeline view on sponsor detail page |
+| **Save to Sponsor** | Save uploaded documents directly to a sponsor without creating a deal |
+| **Direct Sponsor Upload** | Upload documents from sponsor detail page Documents tab (no AI extraction flow required) |
+| **Sponsor Document Storage** | Documents stored in Supabase at `sponsors/{id}/documents/`, linked via `operator_id` on DealDocuments |
+
 ---
 
 ## Remaining Roadmap
@@ -163,6 +171,14 @@ User uploads file -> POST /api/documents/upload
   -> User confirms extraction -> Deal created
   -> move_file() moves from unlinked/ to deals/{id}/documents/
   -> Memo auto-generated in background
+```
+
+### Sponsor Document Upload Flow
+```
+User clicks "Upload Document" on Sponsor Detail -> POST /api/documents/operators/{id}/upload
+  -> Save file locally, create DealDocument with operator_id (no deal_id)
+  -> Background: parse document, upload to Supabase at sponsors/{id}/documents/
+  -> Document appears in sponsor's Documents tab
 ```
 
 ### Key File Paths
